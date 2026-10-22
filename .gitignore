@@ -19,6 +19,7 @@ pc/zh
 *.32X
 mars/obj/
 pc/zhx
+pc/zh_sound
 pc/obj/
 sh2/obj/
 # sh2/z32.bin holds the game's data (incbin of zelda3_assets.dat): never commit it
