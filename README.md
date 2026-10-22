@@ -2,7 +2,7 @@
 
 A port of [snesrev/zelda3](https://github.com/snesrev/zelda3) (MIT), the C reimplementation of
 *The Legend of Zelda: A Link to the Past*, to the **Sega 32X as a cartridge game**, with music from
-a Sega CD (CD audio, Rev32XCD / Sonic32XPlus1's CD code) when one is attached.
+a Sega CD (CD audio, Sonic32XPlus1's CD code) when one is attached.
 
 **No Nintendo data is in this repository.** Like zelda3 itself, the game's graphics, levels and
 music are extracted at build time from your own US ROM (`zelda3.sfc`, SHA256
@@ -23,7 +23,7 @@ compares the SNES RAM - and every drawn picture - with the PC reference (`pc/zhx
 | Video (other frames) | a software SNES PPU on both SH-2s (master the top lines, slave the rest, balanced every frame). Mode 1 is painted layer by layer in priority order (no depth buffer). Per frame: **8-bit** (CGRAM indices, the CGRAM as the 32X palette with the brightness) or, when the frame has **colour math** (water, fog, rain, transparent floors, dark rooms) or the colour window's clip, **15-bit direct colour** with the subscreen painted too and blended exactly as the SNES does. Mode 7 and mosaic use zelda3's own line renderer |
 | Speed (ares) | game logic ~1 ms a frame; Genesis-planes frames ~14 ms to draw (**~29 fps**, a room of chapter 3); 8-bit frames ~43 ms (**~15 fps**), colour-math frames ~120 ms (**~10 fps**, the game slows a little there); frame skip up to 6 |
 | Sound effects | every effect the game can send (ports 1-3: effects, the rain / wind ambiences) rendered at build time with zelda3's own SNES sound driver (`pc/zh_sound`), 8-bit at the PWM rate in the cartridge (2.1 MB); the slave SH-2 mixes 5 voices into the 32X PWM in its H interrupt, paced by the PWM's FIFO (`sh2/z32_sound.cpp`). Pitch checked in ares; the rate is one constant (`Z32_PWM_RATE`) if a console plays it off |
-| Music | CD audio from a Sega CD under the 32X (Mode 1): `build/Zelda3_32X_CD.cue`, track n = song n (34 tracks, 27 min, one pass each - the drive repeats the songs that loop), rendered with the same driver. The 68000 plays them (`cart/cd.s`, from Rev32XCD / Sonic32XPlus1); 0xF1-0xF3 fade / lower / restore with the BIOS fader. No Sega CD: no music |
+| Music | CD audio from a Sega CD under the 32X (Mode 1): `build/Zelda3_32X_CD.cue`, track n = song n (34 tracks, 27 min, one pass each - the drive repeats the songs that loop), rendered with the same driver. The 68000 plays them (`cart/cd.s`, from Sonic32XPlus1); 0xF1-0xF3 fade / lower / restore with the BIOS fader. No Sega CD: no music |
 | Controls | Genesis pad: A = Y (item), B = B (sword), C = A (action), X = X (map), Y = L, Z = R, Start = Start, Mode = Select |
 | Saves | the game's three files in the cartridge's backup SRAM (8 KB, odd bytes at 0x200001; header `RA`). The ROM's upper half shares that address, so the 68000 switches the SRAM in (0xA130F1) only while it copies it to / from an 8 KB mirror in its RAM, with both SH2s parked in SDRAM (`sh2/z32_save.cpp`, `cart/cart_md.s`); a save sends only what changed. Tested in ares: a file made, the console switched off and on, the file is there |
 | Not done | the colour-math scenes on the Genesis planes (an approximation would be needed: the Genesis cannot blend); colour math with a fixed colour or subtraction runs a slower exact loop; mode 7 (the world map) at speed; stereo effects (the SNES pans them - mono here) |
@@ -137,9 +137,9 @@ the first that differ), `ZH_VRAMCHECK` (every VRAM write was marked for the Gene
   BG1 / BG2 on the Genesis planes ("rip and tear")
 - `pc/` - the headless PC runner, the reference for the 32X build; `zh_md.c`, the Genesis + 32X
   picture check; `zh_mdstat.c`, the study that sized it; `zh_sound`, the sound renderer
-- `sh2/` - the SH-2 program: start-up (`crt0.s`, from Rev32XCD), linker script, the main loop and
+- `sh2/` - the SH-2 program: start-up (`crt0.s`), linker script, the main loop and
   two-CPU drawing (`z32_main.cpp`), sound (`z32_sound.cpp`), saves (`z32_save.cpp`)
-- `cart/` - the 68000 program (Rev32XCD's cartridge `cart_md.s`: the Genesis planes' ops, saves,
+- `cart/` - the 68000 program (`cart_md.s`: the Genesis planes' ops, saves,
   pad, CD), CD code
 - `tools/` - `make_cart.py` (32X cartridge image), `make_sound.py` (effects bank + music CD),
   `make_testdata.py`, `endian_fix.py` /

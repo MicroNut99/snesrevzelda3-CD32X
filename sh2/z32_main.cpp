@@ -230,7 +230,7 @@ static bool z32_cram_valid;
 static void palette_from_cgram(void) {           /* only the colours that changed */
   for (int i = 0; i < 256; i++) {
     if (z32_cram_valid && z32_cram[i] == z32_palette[i]) continue;
-    while (!(VDP_FBCTL & 0x2000)) { }            /* PEN: writable only in the blanking (Rev32XCD cram_put) */
+    while (!(VDP_FBCTL & 0x2000)) { }            /* PEN: writable only in the blanking (the 32X needs this) */
     CRAM[i] = z32_cram[i] = z32_palette[i];
   }
   z32_cram_valid = true;

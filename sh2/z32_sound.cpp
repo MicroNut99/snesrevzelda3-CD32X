@@ -3,7 +3,7 @@
  * Effects: tools/make_sound.py renders every effect the game can send (ports 1..3) with
  * zelda3's own SNES sound driver into sfx.bin, signed 8-bit at Z32_PWM_RATE, in the cartridge.
  * The master posts (port, id) into a mailbox; the slave SH2 mixes, in its H interrupt (one per
- * video line, crt0.s vector 69), as Rev32XCD / U-R-R does on hardware: samples are made only
+ * video line, crt0.s vector 69), as U-R-R does on hardware: samples are made only
  * while the PWM's FIFO has room, so the PWM's own clock sets the pace (the line rate only has
  * to be faster). Voices: 0 the ambience (port 1: rain, wind... - loops, fades out on 0x80+),
  * 1-2 port 2 and 3-4 port 3 effects, taking turns.
