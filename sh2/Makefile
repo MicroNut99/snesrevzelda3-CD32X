@@ -1,12 +1,13 @@
 # Zelda 3 32X - SH2 program (stage 1: the speed / correctness test).  make -C sh2 Z32_DATA=<folder>
 # with zelda3_assets.dat (from your ROM), replay.bin and expect.bin (pc/zh) in Z32_DATA.
+# DEFS: the build's switches (sh2/z32_main.cpp: Z32_NO_CHECK, Z32_PLAY, ...); ../build.sh sets them.
 ROOTDIR ?= $(if $(GENDEV),$(GENDEV),/opt/toolchains/sega)
 PREFIX  := $(ROOTDIR)/sh-elf/bin/sh-elf-
 Z       := ../zelda3
 Z32_DATA ?= ../build
 ARCH    := -m2 -mb
 CXXFLAGS := $(ARCH) -O2 -fpermissive -Wno-narrowing -w -fno-exceptions -fno-rtti -fno-asynchronous-unwind-tables \
-            -ffunction-sections -fdata-sections -x c++ -I$(Z) -I../pc/stub -DZ32X
+            -ffunction-sections -fdata-sections -x c++ -I$(Z) -I../pc/stub -DZ32X $(DEFS)
 GAME := $(filter-out main config audio spc_player opengl glsl_shader zelda_cpu_infra,$(basename $(notdir $(wildcard $(Z)/src/*.c))))
 SNES := ppu dma
 OBJS := $(addprefix obj/,$(addsuffix .o,$(GAME) $(SNES))) obj/z32_main.o obj/z32_stubs.o obj/z32_sys.o obj/z32_data.o

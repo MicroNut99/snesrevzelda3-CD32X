@@ -42,16 +42,16 @@ SNES's bank $70 mirror). All 13 chapters run clean under AddressSanitizer / UBSa
 
 ## Building
 ```
-# PC reference (headless): pc/zhx
-make -C pc -f Makefile.cpp
-# assets from your ROM: zelda3's own tool (zelda3/assets/restool.py) -> zelda3_assets.dat
-# SH-2 test data: the chapter's recording + the PC's hashes
-python3 tools/make_testdata.py zelda3_assets.dat build 1 8000
-cp zelda3_assets.dat build/
-# 68000 side (cart/): m68k-elf-as -m68000 --register-prefix-optional --defsym HW_BUILD=1, ld -Ttext 0x880800, objcopy -O binary
-# SH-2 side and the cartridge
-make -C sh2 Z32_DATA=../build
-python3 tools/make_cart.py sh2/z32.bin cart/cart_md.bin zelda3.32x
+./build.sh 2>&1 | tee build_log.txt          # play (pad from power-on) -> Zelda3_32X.32x
+./build.sh replay                            # the chapter-1 replay, then the pad
+./build.sh test                              # the replay, checked against the PC every frame
+```
+Needs `build/zelda3_assets.dat` from your ROM (zelda3's own tool: `cd zelda3 && python3
+assets/restool.py`, then copy it to `build/`), the sh-elf and m68k-elf toolchains (`$GENDEV` or
+`/opt/toolchains/sega`) and python3. For `replay` / `test`, the test data:
+```
+make -C pc -f Makefile.cpp                   # the PC reference, pc/zhx
+python3 tools/make_testdata.py build/zelda3_assets.dat build
 ```
 `sh2/z32_main.cpp` options: `-DZ32_NO_CHECK` (no RAM / picture checks: the real speed),
 `-DZ32_PLAY` (no replay: the pad from power-on), `-DZ32_NO_SKIP` (draw every frame),
