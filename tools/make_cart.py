@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""make_cart.py - build the U-R-R 32X cartridge ROM (adapted from the Kobo cartridge builder).
+"""make_cart.py - build the Zelda 3 32X cartridge ROM (U-R-R's / Kobo's cartridge builder).
 
-  python3 tools/make_cart.py sh2/URR.bin cart/cart_md.bin URR32X.32x
+  python3 tools/make_cart.py sh2/z32.bin cart/cart_md.bin Zelda3_32X.32x
 
 ROM layout:
-  0x000000  standard 32X boot block (tools/mars_boot.bin), patched: titles, ROM end, no SRAM,
+  0x000000  standard 32X boot block (tools/mars_boot.bin), patched: titles (ROM_TITLE), ROM end,
             the 32X header's SH2 values (from the program's 0x38-byte boot table), checksum
   0x000800  cart_md.bin - the 68000 program (linked at 0x880800)
   0x008000  the SH2 program (boot table removed); the 32X boot ROM copies its first part
             (code + data, the boot table's size) to SDRAM
-  after it  the skins' graphics (section .romdata), read in place from ROM by the SH2
+  after it  the game's data (section .romdata: assets, sound effects), read in place by the SH2
 The ROM is padded to a power of two, at least 256 KB."""
 import sys, os, struct
 sh2_path, md_path, out = sys.argv[1:4]
-TITLE = os.environ.get("ROM_TITLE", "U-R-R")
+TITLE = os.environ.get("ROM_TITLE", "ZELDA 3 32X")
 HERE = os.path.dirname(os.path.abspath(__file__))
 boot = bytearray(open(os.path.join(HERE, "mars_boot.bin"), "rb").read())
 assert len(boot) == 0x800 and boot[0x100:0x108] == b"SEGA 32X", "bad tools/mars_boot.bin"
@@ -32,7 +32,9 @@ rom[0:0x800] = boot
 def put_str(off, s, n): rom[off:off + n] = s.encode("ascii")[:n].ljust(n, b" ")
 put_str(0x120, TITLE, 48); put_str(0x150, TITLE, 48)
 rom[0x1A0:0x1A8] = struct.pack(">II", 0, SIZE - 1)
-rom[0x1B0:0x1BC] = b"RA" + bytes([0xF8, 0x20]) + struct.pack(">II", 0x200001, 0x203FFF)   # v17m: 8 KB backup SRAM, odd bytes
+# no backup SRAM declared (yet): the ROM is over 2 MB, and SRAM at 0x200000 would cover part of
+# it - saves will switch it in with 0xA130F1 when they are added
+rom[0x1B0:0x1BC] = b"            "
 put_str(0x3C0, TITLE, 16)                                      # 32X header
 rom[0x3D0:0x3F0] = struct.pack(">8I", 0, SH2_OFF, 0, size, ment, sent, mvbr, svbr)
 rom[0x800:0x800 + len(md)] = md

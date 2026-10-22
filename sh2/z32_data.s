@@ -18,3 +18,6 @@ _z32_expect_end:
         .global _z32_expect_px, _z32_expect_px_end
 _z32_expect_px:  .incbin "expect_px.bin"       ! the PC's 8-bit picture + CGRAM hash per frame
 _z32_expect_px_end:
+        .align  4
+        .global _z32_sfx
+_z32_sfx:        .incbin "sfx.bin"             ! the sound effects + song flags (tools/make_sound.py)

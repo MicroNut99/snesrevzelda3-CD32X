@@ -53,6 +53,8 @@ int main(int argc, char **argv) {
    * ZH_HASH=file: the SNES RAM's hash after every frame (to compare two builds) */
   if (getenv("ZH_REPLAY")) SaveLoadSlot(kSaveLoad_Replay, 256 + atoi(getenv("ZH_REPLAY")));
   FILE *hf = getenv("ZH_HASH") ? fopen(getenv("ZH_HASH"), "w") : 0;
+  { extern FILE *g_apu_log;          /* ZH_APULOG=file: "bank port value" for each new sound command */
+    if (getenv("ZH_APULOG")) g_apu_log = fopen(getenv("ZH_APULOG"), "w"); }
   FILE *pxf = getenv("ZH_PIXHASH") ? fopen(getenv("ZH_PIXHASH"), "w") : 0;
   int input = 0;
   for (int f = 0; f < frames; f++) {

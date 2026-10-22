@@ -23,6 +23,7 @@
 |                      found (COMM8:COMM10 = that score), 0 nothing saved yet
 |     61  SRAM save    (v18) the save block -> SRAM (the checksum is made here)
 |     62  music        (v18) COMM2 = 0 silence, 1 FM (the VGM stream, from the start),
+|                      Zelda 3 32X: 3 = CD track COMM8 once, 4 = CD volume COMM8 (0 .. 0x400);
 |                      2 CD audio track COMM8, repeating (needs a Sega CD + audio CD)
 |     63  CD status    (v18) COMM2 = 0 not tried, 1 no Sega CD, 2 Sega CD does not answer,
 |                      3 ready; COMM8 = last track number (0 = no audio CD)
@@ -277,10 +278,25 @@ c_music:                                        | v18: COMM2 = 0 silence, 1 FM, 
         move.b  #1,mus_mode
         bra.w   done
 1:      cmpi.w  #2,d2
-        bne.b   2f
+        bne.b   4f
+        move.w  #0x400,d0                       | Zelda 3 32X: a new song at full volume
+        bsr     CD_Volume
         move.w  COMM8,d0                        | CD: this track, repeating
         move.b  #1,d1
         bsr     CD_PlayTrack
+        bra.w   done
+4:      cmpi.w  #3,d2                           | Zelda 3 32X: 3 = CD track COMM8, once
+        bne.b   5f
+        move.w  #0x400,d0
+        bsr     CD_Volume
+        move.w  COMM8,d0
+        move.b  #0,d1
+        bsr     CD_PlayTrack
+        bra.w   done
+5:      cmpi.w  #4,d2                           | Zelda 3 32X: 4 = the CD music's volume COMM8
+        bne.b   2f
+        move.w  COMM8,d0
+        bsr     CD_Volume
         bra.w   done
 2:      tst.b   CD_Ok                           | silence: the CD too
         beq.w   done

@@ -157,6 +157,14 @@ CD_Stop:
         moveq   #0x53,d0                        | 'S'
         bra.b   CD_Cmd
 
+CD_Volume:                                      | Zelda 3 32X: d0.w = volume 0 .. 0x400
+        tst.b   CD_Ok
+        beq.b   1f
+        move.w  d0,0xA12010
+        moveq   #0x56,d0                        | 'V'
+        bra.w   CD_Cmd
+1:      rts
+
 CD_PauseResume:
         moveq   #0x5A,d0                        | 'Z'
         bra.w   CD_Cmd
@@ -164,7 +172,8 @@ CD_PauseResume:
 | -------------------------------------------------------------------------------------------
 | The Sub-CPU program (copied to its program RAM at 0x6000).  Commands in the main comm port
 | (main 0xA1200E = sub 0x800E): D disc info, T track info, P play (track in 0x8010, flag byte
-| 0x8012: -1 from it on, 0 once, else repeat), S stop, Z pause / go on, C check disc.  Result in
+| 0x8012: -1 from it on, 0 once, else repeat), S stop, Z pause / go on, C check disc,
+| V volume (0x8010: 0 .. 0x400 - Zelda 3 32X).  Result in
 | the sub comm port (0x800F): D done, E error; the main CPU then clears its port.
 | Short addresses 0x8000-0x80FF are the sign-extended 0xFFFF80xx.
 | -------------------------------------------------------------------------------------------
@@ -222,6 +231,8 @@ WaitCmd:
         beq.w   PauseResume
         cmpi.b  #0x43,0x800E.w                  | C
         beq.w   CheckDisc
+        cmpi.b  #0x56,0x800E.w                  | V (Zelda 3 32X: the music's volume)
+        beq.w   SetVolume
         move.b  #0x45,0x800F.w                  | 'E' error
 WaitAck:
         tst.b   0x800E.w
@@ -285,6 +296,13 @@ PauseResume:
         move.b  #0x44,0x800F.w
         bra.w   WaitAck
 2:      move.w  #0x0004,d0                      | MSCPAUSEOFF
+        jsr     0x5F22.w
+        move.b  #0x44,0x800F.w
+        bra.w   WaitAck
+
+SetVolume:                                      | Zelda 3 32X: 0x8010 = volume 0 .. 0x400
+        move.w  0x8010.w,d1
+        move.w  #0x0085,d0                      | FDRSET: the CD audio fader
         jsr     0x5F22.w
         move.b  #0x44,0x800F.w
         bra.w   WaitAck

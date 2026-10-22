@@ -8,6 +8,7 @@
 #include "snes/dsp_regs.h"
 
 #include "spc_player.h"
+extern int g_spc_song_loops;              // Z32X: counts the songs' endless loops
 
 typedef struct MemMap {
   uint16 off, org_off;
@@ -623,8 +624,11 @@ next_phrase:
           p->block_count = t;
         t = LE16(&(p->ram[p->music_ptr_toplevel]));
         p->music_ptr_toplevel += 2;
-        if (p->block_count != 0)
+        if (p->block_count != 0) {
+          if (p->block_count >= 0x7f)
+            g_spc_song_loops++;         // Z32X: the song's endless loop (pc/zh_sound renders one pass)
           p->music_ptr_toplevel = t;
+        }
       }
     }
     for (int i = 0; i < 8; i++)
@@ -1169,6 +1173,8 @@ static void Spc_Loop_Part2(SpcPlayer *p, uint8 ticks) {
     }
   }
 }
+
+int g_spc_song_loops;                    // Z32X: see above
 
 static void Interrupt_Reset(SpcPlayer *p) {
   dsp_reset(p->dsp);

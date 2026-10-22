@@ -21,8 +21,10 @@ compares the SNES RAM - and every drawn picture - with the PC reference (`pc/zhx
 | Byte order | the SNES RAM, VRAM and data stay little-endian; all game code is C++ with `le16` / `lei16` / `le32` (`types.h`), so a native pointer into SNES memory is a compile error. Checked on the PC with the 13 chapter recordings (~1.07 million frames, RAM and picture compared every frame) |
 | Video | a software SNES PPU on both SH-2s (master the top lines, slave the rest, balanced every frame). Mode 1 is painted layer by layer in priority order (no depth buffer). Per frame: **8-bit** (CGRAM indices, the CGRAM as the 32X palette with the brightness) or, when the frame has **colour math** (water, fog, rain, transparent floors, dark rooms) or the colour window's clip, **15-bit direct colour** with the subscreen painted too and blended exactly as the SNES does. Mode 7 and mosaic use zelda3's own line renderer |
 | Speed (ares) | game logic ~1.7 ms a frame; 8-bit frames ~43 ms to draw (**~15 fps**), colour-math frames ~120 ms (**~10 fps**, the game slows a little there); frame skip up to 6 |
+| Sound effects | every effect the game can send (ports 1-3: effects, the rain / wind ambiences) rendered at build time with zelda3's own SNES sound driver (`pc/zh_sound`), 8-bit at the PWM rate in the cartridge (2.1 MB); the slave SH-2 mixes 5 voices into the 32X PWM in its H interrupt, paced by the PWM's FIFO (`sh2/z32_sound.cpp`). Pitch checked in ares; the rate is one constant (`Z32_PWM_RATE`) if a console plays it off |
+| Music | CD audio from a Sega CD under the 32X (Mode 1): `build/Zelda3_32X_CD.cue`, track n = song n (34 tracks, 27 min, one pass each - the drive repeats the songs that loop), rendered with the same driver. The 68000 plays them (`cart/cd.s`, from Rev32XCD / Sonic32XPlus1); 0xF1-0xF3 fade / lower / restore with the BIOS fader. No Sega CD: no music |
 | Controls | Genesis pad: A = Y (item), B = B (sword), C = A (action), X = X (map), Y = L, Z = R, Start = Start, Mode = Select |
-| Not done | colour math with a fixed colour or subtraction runs a slower exact loop; mode 7 (the world map) at speed; SRAM saves; music (CD audio) and effects (PWM) |
+| Not done | colour math with a fixed colour or subtraction runs a slower exact loop; mode 7 (the world map) at speed; SRAM saves (the ROM is over 2 MB: SRAM will need switching in); stereo effects (the SNES pans them - mono here) |
 
 ### Bugs found in zelda3 by the port
 Out-of-bounds table reads that the SNES resolves by reading on through the ROM; on the PC they
@@ -50,6 +52,8 @@ SNES's bank $70 mirror). All 13 chapters run clean under AddressSanitizer / UBSa
 ./build.sh replay                            # the chapter-1 replay, then the pad
 ./build.sh test                              # the replay, checked against the PC every frame
 ```
+The first build also renders the sound (needs g++, python3 with numpy; scipy for the best
+resampling) into `build/sfx.bin` and the music CD `build/Zelda3_32X_CD.cue` / `.bin`.
 Needs `build/zelda3_assets.dat` from your ROM (zelda3's own tool: `cd zelda3 && python3
 assets/restool.py`, then copy it to `build/`), the sh-elf and m68k-elf toolchains (`$GENDEV` or
 `/opt/toolchains/sega`) and python3. For `replay` / `test`, the test data:
@@ -69,9 +73,10 @@ drawing, one part after the other), `ZH_RAMAT=frame` + `ZH_RAMFILE`, `ZH_PPUDBG=
 
 ## Layout
 - `zelda3/` - snesrev/zelda3 (MIT), with the port's changes (marked `Z32X`)
-- `pc/` - the headless PC runner, the reference for the 32X build
+- `pc/` - the headless PC runner, the reference for the 32X build; `zh_sound`, the sound renderer
 - `sh2/` - the SH-2 program: start-up (`crt0.s`, from Rev32XCD), linker script, the test harness
   and two-CPU drawing (`z32_main.cpp`), sound stubs
 - `cart/` - the 68000 program (Rev32XCD's cartridge `cart_md.s`, starfield removed), CD code
-- `tools/` - `make_cart.py` (32X cartridge image), `make_testdata.py`, `endian_fix.py` /
+- `tools/` - `make_cart.py` (32X cartridge image), `make_sound.py` (effects bank + music CD),
+  `make_testdata.py`, `endian_fix.py` /
   `le_ptr_fix.py` (the byte-order rewrite), `mars_boot.bin`

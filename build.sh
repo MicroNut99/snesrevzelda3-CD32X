@@ -6,6 +6,11 @@
 # Needs build/zelda3_assets.dat (from your ROM: cd zelda3 && python3 assets/restool.py, then
 # copy zelda3_assets.dat to build/) and, for replay / test, build/replay.bin, expect.bin,
 # expect_px.bin (python3 tools/make_testdata.py build/zelda3_assets.dat build).
+# The sound (build/sfx.bin, the music CD build/Zelda3_32X_CD.cue) is made on the first build:
+# pc/zh_sound renders it with zelda3's SNES sound driver (needs g++), tools/make_sound.py packs
+# it (needs python3 with numpy; scipy for the best resampling). Delete build/sfx.bin to make it
+# again. The music CD (Mode 1: the Sega CD under the 32X, this disc in its drive) is an audio CD,
+# track n = song n: burn build/Zelda3_32X_CD.cue, or load it in an emulator as the Sega CD's disc.
 # The toolchains: $GENDEV or /opt/toolchains/sega (sh-elf and m68k-elf), python3.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -23,6 +28,14 @@ DATA="$HERE/build"
 for f in replay.bin expect.bin expect_px.bin; do      # the SH2 program links them (empty for play)
   [ -f "$DATA/$f" ] || { [ "$VARIANT" = play ] && : > "$DATA/$f" || { echo "*** $DATA/$f is missing: python3 tools/make_testdata.py build/zelda3_assets.dat build"; exit 1; }; }
 done
+
+if [ ! -f "$DATA/sfx.bin" ] || [ ! -f "$DATA/Zelda3_32X_CD.cue" ]; then   # the sound, from your ROM's song banks
+  echo "== sound: effects (build/sfx.bin) and the music CD (build/Zelda3_32X_CD.cue / .bin)"
+  make -C "$HERE/pc" -f Makefile.cpp zh_sound
+  mkdir -p "$DATA/snd"
+  "$HERE/pc/zh_sound" "$DATA/zelda3_assets.dat" "$DATA/snd"
+  python3 "$HERE/tools/make_sound.py" "$DATA/snd" "$DATA"
+fi
 
 echo "== 68000 side (cart/cart_md.s)"
 cd "$HERE/cart"

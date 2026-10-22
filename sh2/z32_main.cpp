@@ -14,6 +14,7 @@
 #include "../zelda3/src/assets.h"
 #include "../zelda3/src/variables.h"
 #include "../zelda3/snes/ppu.h"
+#include "z32_sound.h"
 
 #define REG16(a) (*(volatile uint16_t *)(a))
 #define REG8(a)  (*(volatile uint8_t *)(a))
@@ -116,6 +117,7 @@ static volatile uint32 z32_slave_cmd, z32_slave_from, z32_slave_done, z32_slave_
 void secondary(void) {
   FRT_TCR = 0x02;                                /* phi/128, free-running: the slave's own clock */
   FRT_TCSR = 0x00;
+  z32_sound_slave_init();                        /* the PWM effects, in its H interrupt */
   uint32 seen = 0;
   for (;;) {
     uint32 cmd;
@@ -407,6 +409,7 @@ int main(void) {
       }
     }
     z32_stats.frames = f;
+    z32_music_service();                         /* a song change to the 68000 / Sega CD */
 #ifdef Z32_STATS_FROM                            /* test: the timings of one part of the game */
     static bool reset;
     if (!reset && f >= Z32_STATS_FROM) {
@@ -441,4 +444,3 @@ int main(void) {
   }
 }
 
-void slave_hint_c(void) { }

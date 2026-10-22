@@ -402,7 +402,12 @@ struct ApuWriteEnt {
 };
 static struct ApuWriteEnt g_apu_write_ents[16], g_apu_write;
 static uint8 g_apu_write_ent_pos, g_apu_write_count, g_apu_total_write;
+// Z32X: pc/zh's ZH_APULOG - every new value the game sends the sound chip, with the song bank
+FILE *g_apu_log;
+static int g_apu_log_bank;
 void zelda_apu_write(uint32_t adr, uint8_t val) {
+  if (g_apu_log && val != 0 && (val != g_apu_write.ports[adr & 0x3] || (adr & 3) == 0))
+    fprintf(g_apu_log, "%d %d %02x\n", g_apu_log_bank, adr & 3, val);
   g_apu_write.ports[adr & 0x3] = val;
 }
 
@@ -536,6 +541,7 @@ void ZeldaEnableMsu(uint8 enable) {
 }
 
 void LoadSongBank(const uint8 *p) {  // 808888
+  g_apu_log_bank = p == kSoundBank_intro ? 0 : p == kSoundBank_indoor ? 1 : p == kSoundBank_ending ? 2 : 9;
   ZeldaApuLock();
   SpcPlayer_Upload(g_zenv.player, p);
   ZeldaApuUnlock();
