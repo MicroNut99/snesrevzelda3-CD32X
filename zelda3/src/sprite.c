@@ -300,7 +300,7 @@ static const int8 kPlayer_SetupActionHitBox_H[65] = {
 static const int8 kPlayer_SetupActionHitBox_Tab4[13] = {
   1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1
 };
-static const uint8 kSprite_PrepAndDrawSingleLarge_Tab1[236] = {
+static const uint8 kSprite_PrepAndDrawSingleLarge_Tab1[237] = {
   200, 0, 107, 0, 0, 0, 0, 0, 0, 203, 0, 8, 10, 11, 0, 0,
   13, 0, 0, 86, 0, 0, 15, 17, 0, 19, 0, 0, 0, 0, 20, 0,
   21, 27, 0, 42, 42, 248, 0, 182, 0, 0, 0, 170, 0, 0, 28, 0,
@@ -316,6 +316,9 @@ static const uint8 kSprite_PrepAndDrawSingleLarge_Tab1[236] = {
   106, 0, 249, 215, 0, 0, 0, 216, 0, 0, 222, 227, 0, 0, 0, 235,
   0, 0, 0, 0, 0, 0, 244, 244, 29, 31, 31, 31, 32, 32, 32, 33,
   34, 35, 35, 37, 40, 106, 246, 41, 0, 0, 205, 206,
+  139,  // Z32X: sprite 0xEC (thrown item) reads one past the table; on the SNES that is the
+        // next ROM byte, 0x8B (PHB, the first byte of 86dc13). Without it the read was out of
+        // bounds (chapter 4 differed from frame 48088 and crashed).
 };
 static const uint8 kSprite_PrepAndDrawSingleLarge_Tab2[251] = {
   0xa0, 0xa2, 0xa0, 0xa2, 0x80, 0x82, 0x80, 0x82, 0xea, 0xec, 0x84, 0x4e, 0x61, 0xbd, 0x8c, 0x20,

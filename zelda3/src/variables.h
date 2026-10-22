@@ -1481,8 +1481,8 @@ extern const uint8 kMaxArrowsForLevel[];
 extern const uint8 kReceiveItem_Tab1[76];
 extern const uint8 kHealthAfterDeath[21];
 extern const uint8 kReceiveItemGfx[76];
-extern const uint16 kOverworld_OffsetBaseY[64];
-extern const uint16 kOverworld_OffsetBaseX[64];
+extern const uint16 kOverworld_OffsetBaseY[192];
+extern const uint16 kOverworld_OffsetBaseX[192];
 
 // forwards
 

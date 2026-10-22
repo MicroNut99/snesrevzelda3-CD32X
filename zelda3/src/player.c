@@ -24,8 +24,10 @@ static const uint8 kLinkSpinGraphicsByDir[] = {
 };
 static const uint8 kLinkSpinDelays[] = { 1, 5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 5 };
 static const uint8 kGrabWallDirs[] = { 4, 8, 1, 2 };
-static const uint8 kGrabWall_AnimSteps[] = { 0, 1, 2, 3, 1, 2, 3 };
-static const uint8 kGrabWall_AnimTimer[] = { 0, 5, 5, 12, 5, 5, 12 };
+// Z32X: + the ROM bytes after the table (LinkState_TreePull reads index 7+: the SNES reads on)
+static const uint8 kGrabWall_AnimSteps[] = { 0, 1, 2, 3, 1, 2, 3, 165, 103, 41, 240, 133 };
+// Z32X: + the ROM bytes after the table (index 7+ is read; kGrabWall_AnimSteps follows in the ROM)
+static const uint8 kGrabWall_AnimTimer[] = { 0, 5, 5, 12, 5, 5, 12, 0, 1, 2, 3, 1 };
 static const uint8 kCapeDepletionTimers[] = { 4, 8, 8 };
 static const int8 kAvoidJudder1[] = { 0, 1, 2, 3, 4, 5, 6, 7, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 0, 1, 2, 3, 4, 5, 6, 7 };
 static const int8 kLink_DoMoveXCoord_Outdoors_Helper2_y[2] = { -8, 8 };
@@ -2273,7 +2275,9 @@ void Player_Sword_SpinAttackJerks_HoldDown() {  // 879d9f
 }
 
 void LinkItem_Rod() {  // 879eef
-  static const uint8 kRodAnimDelays[] = { 3, 3, 5 };
+  // Z32X: + the ROM bytes after the table (player_handler_timer reaches 3: on the SNES the
+  // read goes on into the code that follows, 879eef); without them it was out of bounds
+  static const uint8 kRodAnimDelays[] = { 3, 3, 5, 36, 58, 112, 47, 165 };
   if (!(button_mask_b_y & 0x40)) {
     if (is_standing_in_doorway || !CheckYButtonPress())
       return;
@@ -2308,7 +2312,8 @@ out:
 }
 
 void LinkItem_Hammer() {  // 879f7b
-  static const uint8 kHammerAnimDelays[] = { 3, 3, 16 };
+  // Z32X: + the ROM bytes after the table (index 3 is read: the code at 879f7b follows)
+  static const uint8 kHammerAnimDelays[] = { 3, 3, 16, 173, 1, 3, 41, 16 };
   if (link_item_in_hand & 0x10)
     return;
   if (!(button_mask_b_y & 0x40)) {
@@ -2346,7 +2351,8 @@ void LinkItem_Hammer() {  // 879f7b
 }
 
 void LinkItem_Bow() {  // 87a006
-  static const uint8 kBowDelays[] = { 3, 3, 8 };
+  // Z32X: + the ROM bytes after the table (index 3 is read: the code at 87a006 follows)
+  static const uint8 kBowDelays[] = { 3, 3, 8, 36, 58, 112, 33, 165 };
 
   if (!(button_mask_b_y & 0x40)) {
     if (is_standing_in_doorway || !CheckYButtonPress())
@@ -3306,7 +3312,8 @@ void Player_CheckHandleCapeStuff() {  // 87ae8f
 }
 
 void LinkItem_CaneOfSomaria() {  // 87aec0
-  static const uint8 kRodAnimDelays[] = { 3, 3, 5 };
+  // Z32X: the SNES has one table, before 879eef (see LinkItem_Rod) - the same ROM bytes past its end
+  static const uint8 kRodAnimDelays[] = { 3, 3, 5, 36, 58, 112, 47, 165 };
   if (!(button_mask_b_y & 0x40)) {
     if (player_on_somaria_platform || is_standing_in_doorway || !CheckYButtonPress())
       return;

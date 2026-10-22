@@ -13,6 +13,8 @@ SECTIONS {
     .sdram 0x06000000 : AT (0x38) {
         KEEP(*z32_crt0.o(.text))
         *(.sdram) *(.sdram.*)
+        /* (tried: the line drawing here instead of the cartridge - 2% faster in ares for 12 KB
+         * of SDRAM; not worth it while the heap is this close to the stacks) */
         . = ALIGN(4);
     }
     .data : AT (0x38 + SIZEOF(.sdram)) {

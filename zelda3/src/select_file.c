@@ -434,8 +434,45 @@ void CopyFile_SelectionAndBlinker() {  // 8cd13f
     0x95, 0x35, 0x12, 0x5c,    0,    1, 0x94, 0x35, 0xff,
   };
   static const uint16 kCopyFile_SelectionAndBlinker_Dst[3] = {0x3c, 0x64, 0x8c};
-  static const uint8 kCopyFile_SelectionAndBlinker_FaerieX[4] = {36, 36, 36, 28};
-  static const uint8 kCopyFile_SelectionAndBlinker_FaerieY[4] = {87, 111, 135, 191};
+  // Z32X: 256 entries - selectfile_R16 can be out of 0..3 here (chapter 4 of the reference
+  // recordings: 245); the SNES then reads on through the ROM, so these are the ROM's bytes
+  // from each table on (Y follows X). Without them the read was out of bounds.
+  static const uint8 kCopyFile_SelectionAndBlinker_FaerieX[256] = {
+    36, 36, 36, 28, 87, 111, 135, 191, 97, 103, 64, 14, 169, 0, 97, 135,
+    64, 14, 169, 0, 97, 199, 64, 14, 169, 0, 97, 231, 64, 14, 169, 0,
+    17, 48, 0, 1, 131, 53, 17, 49, 64, 20, 133, 53, 17, 60, 0, 1,
+    132, 53, 17, 80, 192, 14, 134, 53, 17, 92, 192, 14, 150, 53, 18, 80,
+    0, 1, 147, 53, 18, 81, 64, 20, 149, 53, 18, 92, 0, 1, 148, 53,
+    255, 0, 12, 60, 0, 100, 0, 140, 0, 194, 16, 162, 172, 0, 142, 0,
+    16, 189, 141, 230, 157, 2, 16, 202, 16, 247, 194, 32, 162, 0, 0, 134,
+    0, 181, 191, 41, 1, 0, 240, 41, 191, 140, 132, 0, 155, 170, 185, 57,
+    209, 168, 169, 6, 0, 133, 2, 191, 217, 3, 112, 24, 105, 0, 24, 153,
+    2, 16, 24, 105, 16, 0, 153, 22, 16, 232, 232, 200, 200, 198, 2, 208,
+    230, 166, 0, 232, 232, 224, 6, 0, 144, 197, 226, 48, 166, 200, 189, 230,
+    208, 133, 0, 189, 234, 208, 133, 1, 32, 165, 215, 165, 246, 41, 192, 5,
+    244, 41, 252, 208, 3, 130, 139, 0, 41, 44, 240, 63, 41, 8, 240, 20,
+    166, 200, 202, 48, 11, 138, 10, 168, 185, 191, 0, 208, 37, 202, 16, 245,
+    162, 3, 128, 30, 166, 200, 232, 224, 3, 176, 15, 138, 10, 168, 185, 191,
+    0, 208, 15, 232, 224, 3, 208, 243, 128, 8, 224, 4, 208, 4, 162, 0,
+  };
+  static const uint8 kCopyFile_SelectionAndBlinker_FaerieY[256] = {
+    87, 111, 135, 191, 97, 103, 64, 14, 169, 0, 97, 135, 64, 14, 169, 0,
+    97, 199, 64, 14, 169, 0, 97, 231, 64, 14, 169, 0, 17, 48, 0, 1,
+    131, 53, 17, 49, 64, 20, 133, 53, 17, 60, 0, 1, 132, 53, 17, 80,
+    192, 14, 134, 53, 17, 92, 192, 14, 150, 53, 18, 80, 0, 1, 147, 53,
+    18, 81, 64, 20, 149, 53, 18, 92, 0, 1, 148, 53, 255, 0, 12, 60,
+    0, 100, 0, 140, 0, 194, 16, 162, 172, 0, 142, 0, 16, 189, 141, 230,
+    157, 2, 16, 202, 16, 247, 194, 32, 162, 0, 0, 134, 0, 181, 191, 41,
+    1, 0, 240, 41, 191, 140, 132, 0, 155, 170, 185, 57, 209, 168, 169, 6,
+    0, 133, 2, 191, 217, 3, 112, 24, 105, 0, 24, 153, 2, 16, 24, 105,
+    16, 0, 153, 22, 16, 232, 232, 200, 200, 198, 2, 208, 230, 166, 0, 232,
+    232, 224, 6, 0, 144, 197, 226, 48, 166, 200, 189, 230, 208, 133, 0, 189,
+    234, 208, 133, 1, 32, 165, 215, 165, 246, 41, 192, 5, 244, 41, 252, 208,
+    3, 130, 139, 0, 41, 44, 240, 63, 41, 8, 240, 20, 166, 200, 202, 48,
+    11, 138, 10, 168, 185, 191, 0, 208, 37, 202, 16, 245, 162, 3, 128, 30,
+    166, 200, 232, 224, 3, 176, 15, 138, 10, 168, 185, 191, 0, 208, 15, 232,
+    224, 3, 208, 243, 128, 8, 224, 4, 208, 4, 162, 0, 128, 233, 169, 32,
+  };
 
   vram_upload_offset = 0xac;
   memcpy(vram_upload_data, kCopyFile_SelectionAndBlinker_Tab, 173);
@@ -524,9 +561,46 @@ void CopyFile_TargetSelectionAndBlink() {  // 8cd27b
        0,  0xd, 0x12, 0x18, 0x1e, 0x18, 0x1f, 0x18, 0x38, 0x18, 0xa9, 0x18, 0x1e, 0x18, 0x1a, 0x18,
     0xff,
   };
-  static const uint8 kCopyFile_TargetSelectionAndBlink_FaerieX[3] = {0x8c, 0x8c, 0x1c};
-  static const uint8 kCopyFile_TargetSelectionAndBlink_FaerieY[3] = {0x67, 0x7f, 0xbf};
-  static const uint16 kCopyFile_TargetSelectionAndBlink_Dst[2] = {0x38, 0x60};
+  // Z32X: chapter 4 of the reference recordings takes selectfile_R16 / R20 out of range here;
+  // the SNES reads on through the ROM, so the tables carry the ROM's next bytes (FaerieY follows
+  // FaerieX, Dst is followed by Tab1: Dst[2] = 0x18e7) and Dst is a byte offset, as on the SNES.
+  static const uint8 kCopyFile_TargetSelectionAndBlink_FaerieX[256] = {
+    140, 140, 28, 103, 127, 191, 56, 0, 96, 0, 231, 24, 232, 24, 233, 24,
+    169, 4, 162, 1, 197, 204, 240, 3, 149, 202, 202, 58, 58, 16, 245, 194,
+    16, 162, 132, 0, 134, 14, 189, 58, 231, 157, 2, 16, 202, 16, 247, 194,
+    32, 162, 0, 0, 134, 4, 134, 0, 228, 204, 240, 63, 164, 4, 185, 113,
+    210, 168, 230, 4, 230, 4, 189, 117, 210, 153, 2, 16, 24, 105, 16, 0,
+    153, 22, 16, 181, 191, 240, 36, 169, 6, 0, 133, 2, 191, 140, 132, 0,
+    170, 191, 217, 3, 112, 24, 105, 0, 24, 153, 6, 16, 24, 105, 16, 0,
+    153, 26, 16, 232, 232, 200, 200, 198, 2, 208, 230, 166, 0, 232, 232, 224,
+    6, 0, 144, 178, 166, 14, 142, 0, 16, 226, 48, 166, 200, 189, 107, 210,
+    133, 0, 189, 110, 210, 133, 1, 32, 165, 215, 165, 246, 41, 192, 5, 244,
+    41, 252, 240, 95, 41, 44, 240, 31, 41, 8, 240, 9, 166, 200, 202, 16,
+    13, 162, 2, 128, 9, 166, 200, 232, 224, 3, 144, 2, 162, 0, 169, 32,
+    141, 47, 1, 134, 200, 128, 60, 169, 44, 141, 46, 1, 166, 200, 224, 2,
+    240, 44, 181, 202, 133, 202, 100, 203, 162, 48, 189, 58, 210, 157, 54, 16,
+    202, 16, 247, 165, 200, 208, 19, 169, 98, 141, 54, 16, 141, 60, 16, 169,
+    20, 141, 55, 16, 24, 105, 32, 141, 61, 16, 230, 17, 128, 3, 32, 45,
+  };
+  static const uint8 kCopyFile_TargetSelectionAndBlink_FaerieY[256] = {
+    103, 127, 191, 56, 0, 96, 0, 231, 24, 232, 24, 233, 24, 169, 4, 162,
+    1, 197, 204, 240, 3, 149, 202, 202, 58, 58, 16, 245, 194, 16, 162, 132,
+    0, 134, 14, 189, 58, 231, 157, 2, 16, 202, 16, 247, 194, 32, 162, 0,
+    0, 134, 4, 134, 0, 228, 204, 240, 63, 164, 4, 185, 113, 210, 168, 230,
+    4, 230, 4, 189, 117, 210, 153, 2, 16, 24, 105, 16, 0, 153, 22, 16,
+    181, 191, 240, 36, 169, 6, 0, 133, 2, 191, 140, 132, 0, 170, 191, 217,
+    3, 112, 24, 105, 0, 24, 153, 6, 16, 24, 105, 16, 0, 153, 26, 16,
+    232, 232, 200, 200, 198, 2, 208, 230, 166, 0, 232, 232, 224, 6, 0, 144,
+    178, 166, 14, 142, 0, 16, 226, 48, 166, 200, 189, 107, 210, 133, 0, 189,
+    110, 210, 133, 1, 32, 165, 215, 165, 246, 41, 192, 5, 244, 41, 252, 240,
+    95, 41, 44, 240, 31, 41, 8, 240, 9, 166, 200, 202, 16, 13, 162, 2,
+    128, 9, 166, 200, 232, 224, 3, 144, 2, 162, 0, 169, 32, 141, 47, 1,
+    134, 200, 128, 60, 169, 44, 141, 46, 1, 166, 200, 224, 2, 240, 44, 181,
+    202, 133, 202, 100, 203, 162, 48, 189, 58, 210, 157, 54, 16, 202, 16, 247,
+    165, 200, 208, 19, 169, 98, 141, 54, 16, 141, 60, 16, 169, 20, 141, 55,
+    16, 24, 105, 32, 141, 61, 16, 230, 17, 128, 3, 32, 45, 210, 100, 200,
+  };
+  static const uint16 kCopyFile_TargetSelectionAndBlink_Dst[3] = {0x38, 0x60, 0x18e7};
   static const uint16 kCopyFile_TargetSelectionAndBlink_Tab1[3] = {0x18e7, 0x18e8, 0x18e9};
   memcpy(vram_upload_data, kCopyFile_TargetSelectionAndBlink_Tab0, 133);
 
@@ -534,7 +608,7 @@ void CopyFile_TargetSelectionAndBlink() {  // 8cd27b
     if (k * 2 == selectfile_R20)
       continue;
 
-    le16 *dst = vram_upload_data + kCopyFile_TargetSelectionAndBlink_Dst[j++] / 2;
+    le16 *dst = (le16 *)((uint8 *)vram_upload_data + kCopyFile_TargetSelectionAndBlink_Dst[j++]);
     uint16 t = kCopyFile_TargetSelectionAndBlink_Tab1[k];
     dst[0] = t;
     dst[10] = t + 0x10;
@@ -602,7 +676,14 @@ void CopyFile_HandleConfirmation() {  // 8cd371
   } else if (a != 0) {
     sound_effect_1 = 0x2c;
     if (selectfile_R16 == 0) {
-      memcpy(g_zenv.sram + (selectfile_R18 >> 1) * 0x500, g_zenv.sram + (selectfile_R20 >> 1) * 0x500, 0x500);
+      // Z32X: as the SNES does it - 16-bit offsets into bank $70, where the 8 KB SRAM repeats
+      // through $0000-$7FFF and $8000+ is ROM (writes ignored; reads approximated as the SRAM
+      // mirror). Only matters when R18 / R20 are out of range (chapter 4 of the recordings):
+      // the plain memcpy then ran past the 8 KB.
+      uint16 d = (uint16)((selectfile_R18 >> 1) * 0x500), sp = (uint16)((selectfile_R20 >> 1) * 0x500);
+      for (int i = 0; i < 0x500; i++, d++, sp++)
+        if (!(d & 0x8000))
+          g_zenv.sram[d & 0x1fff] = g_zenv.sram[sp & 0x1fff];
       selectfile_arr1[(selectfile_R18 >> 1)] = 1;
       ZeldaWriteSram();
     }
