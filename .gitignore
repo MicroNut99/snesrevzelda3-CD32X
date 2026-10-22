@@ -30,5 +30,5 @@ cart/cart_md.bin
 replay.bin
 expect.bin
 expect_px.bin
-build/
+build
 build_log.txt
