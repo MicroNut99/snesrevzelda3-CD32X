@@ -11,7 +11,7 @@
  *
  * Load: at power-on (z32_save_load, Z32_PLAY builds; the replays start from an empty SRAM as on
  * the PC). Save: zelda3 calls ZeldaWriteSram when it saves (file select, save & quit, death...):
- * only the longs that changed since the last load / save go over COMM, then 61. */
+ * only the 64-byte chunks that changed since the last load / save go over COMM, then 61. */
 #include <stdint.h>
 #include <string.h>
 #include "../zelda3/src/types.h"
@@ -28,7 +28,13 @@
 extern "C" {
 uint32_t z32_park_req, z32_parked;       /* master -> slave: park; slave -> master: parked */
 }
-static uint8 z32_sram_shadow[0x2000];    /* the SRAM as the 68000's mirror holds it */
+/* what the 68000's mirror holds, as a checksum per 64 bytes (no 8 KB copy: the SDRAM is full) */
+static uint32 z32_sram_sums[0x2000 / 64];
+static uint32 chunk_sum(const uint8 *p) {
+  uint32 h = 2166136261u;                /* FNV-1a */
+  for (int i = 0; i < 64; i++) h = (h ^ p[i]) * 16777619u;
+  return h;
+}
 
 /* a 68000 command; the wait is in SDRAM (the master's code is in the ROM) */
 SDRAM_CODE static void md_cmd_sdram(uint16 cmd) {
@@ -66,10 +72,10 @@ void z32_save_load(void) {
     COMM2 = (uint16)i;
     md_cmd(65);
     uint32 v = COMM8L;                   /* big-endian: byte 0 of the long = SRAM byte 4i */
-    uint8 *p = z32_sram_shadow + i * 4;
+    uint8 *p = g_zenv.sram + i * 4;
     p[0] = (uint8)(v >> 24); p[1] = (uint8)(v >> 16); p[2] = (uint8)(v >> 8); p[3] = (uint8)v;
   }
-  memcpy(g_zenv.sram, z32_sram_shadow, 0x2000);
+  for (int c = 0; c < 0x2000 / 64; c++) z32_sram_sums[c] = chunk_sum(g_zenv.sram + c * 64);
 }
 
 void ZeldaReadSram() { z32_save_load(); }
@@ -77,15 +83,17 @@ void ZeldaReadSram() { z32_save_load(); }
 void ZeldaWriteSram() {
 #ifdef Z32_PLAY
   int changed = 0;
-  for (int i = 0; i < 0x800; i++) {
-    const uint8 *p = g_zenv.sram + i * 4;
-    uint8 *q = z32_sram_shadow + i * 4;
-    if (!memcmp(p, q, 4))
+  for (int c = 0; c < 0x2000 / 64; c++) {   /* the 64-byte chunks that changed, whole */
+    uint32 h = chunk_sum(g_zenv.sram + c * 64);
+    if (h == z32_sram_sums[c])
       continue;
-    COMM8L = (uint32)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
-    COMM2 = (uint16)i;
-    md_cmd(66);
-    memcpy(q, p, 4);
+    for (int i = c * 16; i < c * 16 + 16; i++) {
+      const uint8 *p = g_zenv.sram + i * 4;
+      COMM8L = (uint32)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
+      COMM2 = (uint16)i;
+      md_cmd(66);
+    }
+    z32_sram_sums[c] = h;
     changed++;
   }
   if (changed)
@@ -112,6 +120,6 @@ void z32_save_selftest(void) {
   for (int i = 0x1000; i < 0x1ff0; i++) if (s[i] != (uint8)(i * 7 + n)) ok_new = 0;
   z32_save_test = (uint32)n << 16 | ok_old | ok_new << 1;
   memset(g_zenv.sram, 0, 0x2000);
-  memset(z32_sram_shadow, 0, 0x2000);
+  for (int c = 0; c < 0x2000 / 64; c++) z32_sram_sums[c] = chunk_sum(g_zenv.sram + c * 64);
 }
 #endif
