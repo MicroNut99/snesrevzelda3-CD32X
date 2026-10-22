@@ -65,15 +65,37 @@ struct Z32Stats {
   uint32 px_checked, px_first_bad;           /* the picture (8-bit FB + CGRAM) against the PC's */
   uint32 split;                              /* the line the slave starts at (last frame) */
   uint32 slave_sum, wait_sum;                /* FRT ticks: the slave's drawing, the master's wait for it */
+  uint32 drawn, skipped;                     /* frames drawn; game frames run without a picture */
 };
 extern "C" { Z32Stats z32_stats; extern char *z32_heap_peak; }
 
 /* the 68000's frame counter (cart/cart_md.s command 48: pad in COMM8, V-blanks in COMM10) */
 static void comm_pause(void) { for (volatile int k = 0; k < 64; k++) { } }
+static uint16 z32_pad;                           /* the pad, as the 68000 last read it (SEGA_CTRL_*) */
 static uint16 md_frames(void) {
   COMM0 = 48;
   for (uint32 n = 0; n < 40000 && COMM0 != 0; n++) comm_pause();
+  z32_pad = COMM8;
   return COMM10;
+}
+
+/* the Genesis pad as the SNES joypad zelda3 reads (bit 0 B, 1 Y, 2 Select, 3 Start, 4 Up, 5 Down,
+ * 6 Left, 7 Right, 8 A, 9 X, 10 L, 11 R). Bottom row A B C = Y (item) B (sword) A (action);
+ * top row X Y Z = X (map) L R; Start = Start; Mode = Select. */
+static int snes_input(uint16 pad) {
+  if ((pad & 0xF000) == 0xF000)
+    return 0;                                    /* no pad */
+  static const struct { uint16 md; uint16 snes; } kMap[] = {
+    { 0x0001, 1 << 4 }, { 0x0002, 1 << 5 }, { 0x0004, 1 << 6 }, { 0x0008, 1 << 7 },   /* d-pad */
+    { 0x0040, 1 << 1 }, { 0x0010, 1 << 0 }, { 0x0020, 1 << 8 },                     /* A B C */
+    { 0x0400, 1 << 9 }, { 0x0200, 1 << 10 }, { 0x0100, 1 << 11 },                   /* X Y Z */
+    { 0x0080, 1 << 3 }, { 0x0800, 1 << 2 },                                         /* Start, Mode */
+  };
+  int in = 0;
+  for (unsigned i = 0; i < sizeof kMap / sizeof kMap[0]; i++)
+    if (pad & kMap[i].md)
+      in |= kMap[i].snes;
+  return in;
 }
 static uint16 frt(void) { uint8 h = FRT_FRCH; uint8 l = FRT_FRCL; return (uint16)(h << 8 | l); }
 
@@ -98,7 +120,7 @@ void secondary(void) {
     seen = cmd;
     CCR = 0x11;                                  /* purge: drop what the master changed since */
     uint16 t0 = frt();
-    ZeldaDrawPpuLines(&z32_slave_ctx, (int)THRU(z32_slave_from), z32_slave_ctx.height);
+    ZeldaDrawPpuLines(&z32_slave_ctx, (int)THRU(z32_slave_from), z32_slave_ctx.height, z32_slave_ctx.height);
     THRU(z32_slave_ticks) = (uint16)(frt() - t0);
     THRU(z32_slave_done) = cmd;
   }
@@ -127,12 +149,22 @@ static void video_init(void) {
   }
 }
 
+static uint16 z32_palette[256];                  /* the CGRAM of the picture last drawn */
+static uint8 z32_bright = 15;                    /* and its brightness (INIDISP 0..15) */
+static void snapshot_palette(void) {
+  memcpy(z32_palette, g_zenv.ppu->cgram, sizeof z32_palette);
+  z32_bright = g_zenv.ppu->brightness;
+}
 static void palette_from_cgram(void) {
-  const uint16_t *cg = g_zenv.ppu->cgram;
+  const uint16_t *cg = z32_palette;
+  uint8 m[32];                                   /* the SNES brightness: each 5-bit level * b / 15 */
+  for (int i = 0; i < 32; i++) m[i] = (uint8)(i * z32_bright / 15);
   for (int i = 0; i < 256; i++) {
     uint16_t c = cg[i] & 0x7FFF;                 /* SNES BGR555 = 32X BGR555 */
+    if (z32_bright != 15)
+      c = (uint16_t)(m[c & 31] | m[c >> 5 & 31] << 5 | m[c >> 10] << 10);
     while (!(VDP_FBCTL & 0x2000)) { }            /* PEN: writable only in the blanking (Rev32XCD cram_put) */
-    CRAM[i] = c ? c : 0x0400;                    /* pure black is see-through on the 32X */
+    CRAM[i] = c ? c : 0x0400;                    /* black as 1/31 blue: 0x0000 let the MD layer show (first tests) */
   }
 }
 
@@ -143,16 +175,105 @@ static void flip(void) {
 }
 
 #ifdef Z32_STOP_ON_BAD
+static void z32_stop(void);
+#endif
+/* ---- test checks (off with Z32_NO_CHECK): the RAM after every game frame, the picture of
+ * every drawn frame, against the PC's (expect.bin / expect_px.bin) ---- */
+static void check_ram(uint32 f) {
+#ifndef Z32_NO_CHECK
+  if (f >= (uint32)(z32_expect_end - z32_expect) / 4)
+    return;
+  uint16 t1 = frt();
+  uint32 h = 2166136261u;                        /* FNV-1a, as pc/zh_main.c */
+  for (int i = 0; i < 0x20000; i++) h = (h ^ g_ram[i]) * 16777619u;
+  const uint8 *e = z32_expect + 4 * f;
+  uint32 want = (uint32)e[0] << 24 | e[1] << 16 | e[2] << 8 | e[3];
+  z32_stats.checked = f + 1;
+  z32_stats.hash_sum += (uint16)(frt() - t1);
+  if (h != want && z32_stats.first_bad == 0xFFFFFFFF) {
+    z32_stats.first_bad = f; z32_stats.bad_hash = h; z32_stats.want_hash = want;
+#ifdef Z32_STOP_ON_BAD
+    z32_stop();                                  /* debug: hold g_ram as it is for a dump */
+#endif
+  }
+#else
+  (void)f;
+#endif
+}
+
+static void check_picture(uint32 f) {
+#ifndef Z32_NO_CHECK
+  if (f >= (uint32)(z32_expect_px_end - z32_expect_px) / 4)
+    return;
+  uint32 ph = 2166136261u;
+  for (int y = 0; y < 224; y++) { const uint8 *row = FB8 + 32 + y * 320; for (int x = 0; x < 256; x++) ph = (ph ^ row[x]) * 16777619u; }
+  for (int i = 0; i < 256; i++) { uint16 c = g_zenv.ppu->cgram[i]; ph = (ph ^ (c & 0xff)) * 16777619u; ph = (ph ^ (c >> 8)) * 16777619u; }
+  const uint8 *e = z32_expect_px + 4 * f;
+  z32_stats.px_checked++;
+  if (ph != ((uint32)e[0] << 24 | e[1] << 16 | e[2] << 8 | e[3]) && z32_stats.px_first_bad == 0xFFFFFFFF) {
+    z32_stats.px_first_bad = f;
+#ifdef Z32_STOP_ON_BAD
+    z32_stop();                                  /* debug: show the bad picture, hold */
+#endif
+  }
+#else
+  (void)f;
+#endif
+}
+
+/* the picture: two SH2s, master lines 0..split-1, slave split..; the split balanced each frame */
+static void draw_frame(void) {
+  static uint32 seq, split = 112;
+  ZeldaDrawCtx ctx;
+  ZeldaDrawPpuFrameBegin(&ctx, FB8 + 32, 320, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);
+  ZeldaDrawCtxCopy(&z32_slave_ctx, &z32_slave_ppu, &ctx);
+  THRU(z32_slave_from) = split;
+  THRU(z32_slave_cmd) = ++seq;
+  uint16 ta = frt();
+  ZeldaDrawPpuLines(&ctx, 0, (int)split - 1, ctx.height);   /* the events to the end: the PPU
+                                                                 ends as after a whole frame */
+  uint16 tb = frt();
+  while (THRU(z32_slave_done) != seq) { }
+  uint16 tc = frt();
+  ZeldaDrawPpuFrameEnd(&ctx);
+  snapshot_palette();                            /* shown with this picture */
+  uint32 tm = (uint16)(tb - ta), ts = THRU(z32_slave_ticks);
+  z32_stats.split = split; z32_stats.slave_sum += ts; z32_stats.wait_sum += (uint16)(tc - tb);
+  /* balance: the per-line cost of each part; move the split toward equal times (a few lines a
+   * frame, so one odd frame does not swing it) */
+  uint32 ns = 225 - split;
+  if (tm && ts) {
+    uint32 want = (uint32)((uint64_t)225 * (ts * split) / (ts * split + tm * ns));
+    if (want > split + 4) want = split + 4;
+    if (want + 4 < split) want = split - 4;
+    if (want < 16) want = 16;
+    if (want > 208) want = 208;
+    split = want;
+  }
+}
+
+#ifdef Z32_STOP_ON_BAD
 static void flip(void);
 static void palette_from_cgram(void);
 static void NORETURN z32_stop(void) {
   __asm__ volatile("" ::: "memory");             /* z32_stats is written before we hold */
+  snapshot_palette();
   flip();                                        /* the frame just drawn, on screen */
   palette_from_cgram();
   COMM14 = 0x0BAD;
   for (;;) __asm__ volatile("" ::: "memory");
 }
 #endif
+
+/* the picture drawn last on screen: the frame buffer swap (at the V-blank) and its palette */
+static void swap_pictures(void) {
+  uint16 t4 = frt();
+  flip();
+  uint16 t5 = frt();
+  palette_from_cgram();
+  z32_stats.flip_sum += (uint16)(t5 - t4);
+  z32_stats.pal_sum += (uint16)(frt() - t5);
+}
 
 int main(void) {
   FRT_TCR = 0x02;                                /* phi/128; the master takes no interrupts, so */
@@ -168,7 +289,9 @@ int main(void) {
   ZeldaInitialize();
   g_zenv.ppu->extraLeftRight = 0;
   COMM12 = 2;
+#ifndef Z32_PLAY                                 /* Z32_PLAY: no replay, the pad from power-on */
   if (!ZeldaStartReplayFromMemory(z32_replay, (size_t)(z32_replay_end - z32_replay))) Die("replay");
+#endif
   video_init();
 #ifdef Z32_PATTERN
   for (;;) {                                     /* display test: colour bars, no game */
@@ -179,98 +302,57 @@ int main(void) {
   }
 #endif
   COMM12 = 3;
-  const uint32 n_expect = (uint32)(z32_expect_end - z32_expect) / 4;
-  for (uint32 f = 0;; f++) {
-    uint16 m0 = md_frames();
-    uint16 t0 = frt();
-    ZeldaRunFrame(0);                            /* replay: the recording gives the inputs */
-    uint16 t1 = frt();
-    uint16 m1 = md_frames();
-#ifdef Z32_NO_CHECK
-    if (0) {                                     /* speed build: no RAM / picture checks */
-      uint32 h = 0;
+  /* frame skip: the game logic runs at the SNES's 60 Hz, timed by the 68000's V-blank count;
+   * each pass runs the frames that are due (at most Z32_MAX_SKIP: past that the game slows
+   * down rather than jump), the ones before the last without a picture (ZeldaSkipPpuFrame:
+   * the game RAM and the PPU end as if drawn), then draws once. Z32_NO_SKIP: every frame. */
+#ifdef Z32_NO_SKIP
+  enum { kMaxSkip = 1 };
 #else
-    uint32 h = 2166136261u;                      /* FNV-1a, as pc/zh_main.c */
-    for (int i = 0; i < 0x20000; i++) h = (h ^ g_ram[i]) * 16777619u;
-    if (f < n_expect) {
+  enum { kMaxSkip = 6 };
 #endif
-      uint32 want = (uint32)z32_expect[4 * f] << 24 | z32_expect[4 * f + 1] << 16 | z32_expect[4 * f + 2] << 8 | z32_expect[4 * f + 3];
-      z32_stats.checked = f + 1;
-      if (h != want && z32_stats.first_bad == 0xFFFFFFFF) {
-        z32_stats.first_bad = f; z32_stats.bad_hash = h; z32_stats.want_hash = want;
-#ifdef Z32_STOP_ON_BAD
-        z32_stop();                              /* debug: hold g_ram as it is for a dump */
-#endif
+  uint32 f = 0, clock = 0, credited = 0;
+  uint16 last = md_frames();
+  bool pending = false;                          /* a drawn picture waits for its V-blank */
+  for (;;) {
+    uint16 now;
+    do {                                         /* wait until a frame is due */
+      now = md_frames();
+      clock += (uint16)(now - last), last = now;
+    } while (clock <= credited && kMaxSkip > 1 && !pending);
+    uint32 n = kMaxSkip > 1 ? clock - credited : 1;
+    if (n < 1) n = 1;
+    if (n > kMaxSkip) n = kMaxSkip;
+    credited = kMaxSkip > 1 && clock - credited > kMaxSkip ? clock - kMaxSkip + n : credited + n;
+    for (uint32 k = 0; k < n; k++, f++) {
+      if (k == 1 && pending) { swap_pictures(); pending = false; }
+      uint16 t0 = frt();
+      ZeldaRunFrame(snes_input(z32_pad));        /* a replay ignores it; after one, the pad plays */
+      uint32 dl = (uint16)(frt() - t0);
+      z32_stats.logic_sum += dl;
+      if (dl > z32_stats.logic_max) z32_stats.logic_max = dl;
+      check_ram(f);
+      if (k + 1 < n) {
+        ZeldaSkipPpuFrame();
+        z32_stats.skipped++;
       }
     }
-    uint16 m2 = md_frames();
-    uint16 t2 = frt();
-    z32_stats.hash_sum += (uint16)(t2 - t1);
-#ifdef Z32_DRAW_TO_SDRAM
-    static uint8 line_buf[320];                  /* test: every line into one SDRAM line, no FB writes */
-    ZeldaDrawPpuFrame(line_buf, 0, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);
-#else
-    {                                            /* two SH2s: master lines 0..split-1, slave split.. */
-      static uint32 seq, split = 112;
-      ZeldaDrawCtx ctx;
-      ZeldaDrawPpuFrameBegin(&ctx, FB8 + 32, 320, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);
-      ZeldaDrawCtxCopy(&z32_slave_ctx, &z32_slave_ppu, &ctx);
-      THRU(z32_slave_from) = split;
-      THRU(z32_slave_cmd) = ++seq;
-      uint16 ta = frt();
-      ZeldaDrawPpuLines(&ctx, 0, (int)split - 1);
-      uint16 tb = frt();
-      while (THRU(z32_slave_done) != seq) { }
-      uint16 tc = frt();
-      ZeldaDrawPpuFrameEnd(&ctx);
-      uint32 tm = (uint16)(tb - ta), ts = THRU(z32_slave_ticks);
-      z32_stats.split = split; z32_stats.slave_sum += ts; z32_stats.wait_sum += (uint16)(tc - tb);
-      /* balance: the per-line cost of each part; move the split toward equal times (a few
-       * lines a frame, so one odd frame does not swing it) */
-      uint32 ns = 225 - split;
-      if (tm && ts) {
-        uint32 want = (uint32)((uint64_t)225 * (ts * split) / (ts * split + tm * ns));
-        if (want > split + 4) want = split + 4;
-        if (want + 4 < split) want = split - 4;
-        if (want < 16) want = 16;
-        if (want > 208) want = 208;
-        split = want;
-      }
-    }
-#endif
-    uint16 t3 = frt();
-    uint16 m3 = md_frames();
-#if !defined(Z32_DRAW_TO_SDRAM) && !defined(Z32_NO_CHECK)
-    if (f < (uint32)(z32_expect_px_end - z32_expect_px) / 4) {   /* test only: the picture as the PC's */
-      uint32 ph = 2166136261u;
-      for (int y = 0; y < 224; y++) { const uint8 *row = FB8 + 32 + y * 320; for (int x = 0; x < 256; x++) ph = (ph ^ row[x]) * 16777619u; }
-      for (int i = 0; i < 256; i++) { uint16 c = g_zenv.ppu->cgram[i]; ph = (ph ^ (c & 0xff)) * 16777619u; ph = (ph ^ (c >> 8)) * 16777619u; }
-      const uint8 *e = z32_expect_px + 4 * f;
-      z32_stats.px_checked = f + 1;
-      if (ph != ((uint32)e[0] << 24 | e[1] << 16 | e[2] << 8 | e[3]) && z32_stats.px_first_bad == 0xFFFFFFFF) {
-        z32_stats.px_first_bad = f;
-#ifdef Z32_STOP_ON_BAD
-        z32_stop();                              /* debug: show the bad picture, hold */
-#endif
-      }
-    }
-#endif
-    z32_stats.v_logic += (uint16)(m1 - m0); z32_stats.v_hash += (uint16)(m2 - m1);
-    z32_stats.v_draw += (uint16)(m3 - m2);
-    uint32 dl = (uint16)(t1 - t0), dd = (uint16)(t3 - t2);
-    z32_stats.logic_sum += dl; z32_stats.draw_sum += dd;
-    if (dl > z32_stats.logic_max) z32_stats.logic_max = dl;
+    z32_stats.frames = f;
+    /* the last picture goes on screen at the V-blank after it was drawn and the first game
+     * frame of this pass ran (the master would only wait for the swap otherwise) */
+    if (pending) { swap_pictures(); pending = false; }
+    uint16 t2 = frt(), m2 = md_frames();
+    draw_frame();
+    uint16 t3 = frt(), m3 = md_frames();
+    check_picture(f - 1);
+    uint32 dd = (uint16)(t3 - t2);
+    z32_stats.draw_sum += dd;
     if (dd > z32_stats.draw_max) z32_stats.draw_max = dd;
-    z32_stats.frames = f + 1;
+    z32_stats.v_draw += (uint16)(m3 - m2);
+    z32_stats.drawn++;
     z32_stats.heap_peak = (uint32)(z32_heap_peak - (char *)0x06000000);
-    uint16 t4 = frt();
-    flip();
-    uint16 t5 = frt();
-    palette_from_cgram();
-    uint16 t6 = frt();
-    z32_stats.flip_sum += (uint16)(t5 - t4);
-    z32_stats.pal_sum += (uint16)(t6 - t5);
-    z32_stats.v_total += (uint16)(md_frames() - m0);
+    pending = true;
+    z32_stats.v_total = clock;
     COMM14 = (uint16)f;
   }
 }

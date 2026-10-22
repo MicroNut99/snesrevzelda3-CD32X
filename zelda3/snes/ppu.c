@@ -63,6 +63,13 @@ static PPU_INLINE uint32 PpuTileRow(const vram16 *addr, bool bpp4, const uint32 
   return r;
 }
 
+// Z32X: every nibble of a tile row non-zero (no transparent pixel)
+static PPU_INLINE bool PpuRowOpaque(uint32 row) {
+  uint32 t = row | row >> 1;
+  t |= t >> 2;
+  return (t & 0x11111111) == 0x11111111;
+}
+
 Ppu* ppu_init() {
   Ppu* ppu = (Ppu * )malloc(sizeof(Ppu));
   PpuInitTables();
@@ -767,6 +774,160 @@ static void PpuDrawBackgrounds(Ppu *ppu, int y, bool sub) {
   }
 }
 
+// Z32X: mode 1 drawn in priority order straight into an 8-bit line (ppu->lineBuf) - no depth
+// buffer. Each source has its own priority level, never equal to another's (the depth values
+// above: BG3 lo 0x12 < sprites 0 0x24/26 < sprites 1 0x64/66 < BG2 lo 0x71 < BG1 lo 0x80 <
+// sprites 2 0xa4/a6 < BG2 hi 0xb1 < BG1 hi 0xc0 < sprites 3 0xe4/e6 < BG3 hi 0xf2), so painting
+// them lowest first gives the same picture as the depth compare, with no compare per pixel.
+#define PAINT(i) do { uint32 p_ = row & 15; if (p_) dst[i] = (uint8)(base + p_); row >>= 4; } while (0)
+
+// One pass over a layer's line: the low-priority tiles are painted, the high ones go into hi
+static PPU_INLINE void PpuPaintBackground(Ppu *ppu, uint y, uint layer, bool bpp4, PpuPaintList *hi) {
+  const int kTileWords = bpp4 ? 16 : 8, kPaletteShift = bpp4 ? 6 : 8;
+  hi->n = 0;
+  if (!IS_SCREEN_ENABLED(ppu, 0, layer))
+    return;
+  PpuWindows win;
+  IS_SCREEN_WINDOWED(ppu, 0, layer) ? PpuWindows_Calc(&win, ppu, layer) : PpuWindows_Clear(&win, ppu, layer);
+  BgLayer *bglayer = &ppu->bgLayer[layer];
+  y += bglayer->vScroll;
+  int sc_offs = bglayer->tilemapAdr + (((y >> 3) & 0x1f) << 5);
+  if ((y & 0x100) && bglayer->tilemapHigher)
+    sc_offs += bglayer->tilemapWider ? 0x800 : 0x400;
+  const vram16 *tps[2] = {
+    &ppu->vram[sc_offs & 0x7fff],
+    &ppu->vram[sc_offs + (bglayer->tilemapWider ? 0x400 : 0) & 0x7fff]
+  };
+  int tileadr = ppu->bgLayer[layer].tileAdr;
+  int tileadr1 = tileadr + 7 - (y & 0x7), tileadr0 = tileadr + (y & 0x7);
+  uint8 *line = (uint8 *)ppu->lineBuf;
+  PpuPaintItem *it = hi->item;
+  for (size_t windex = 0; windex < win.nr; windex++) {
+    if (win.bits & (1 << windex))
+      continue;
+    uint x = win.edges[windex] + bglayer->hScroll;
+    uint w = win.edges[windex + 1] - win.edges[windex];
+    uint8 *dst = line + win.edges[windex];
+    const vram16 *tp = tps[x >> 8 & 1] + ((x >> 3) & 0x1f);
+    const vram16 *tp_last = tps[x >> 8 & 1] + 31;
+    const vram16 *tp_next = tps[(x >> 8 & 1) ^ 1];
+#define NEXT_TP() if (tp != tp_last) tp += 1; else tp = tp_next, tp_next = tp_last - 31, tp_last = tp + 31;
+#define TILE_ROW(tile) PpuTileRow(&ppu->vram[(((tile) & 0x8000) ? tileadr1 : tileadr0) + ((tile) & 0x3ff) * kTileWords & 0x7fff], bpp4, g_ppuExpand[((tile) >> 14) & 1])
+#define TILE_AT(tp) ((const uint8 *)(tp))[0] | ((const uint8 *)(tp))[1] << 8
+    if (x & 7) {
+      int curw = IntMin(8 - (x & 7), w);
+      w -= curw;
+      uint32 tile = TILE_AT(tp);
+      NEXT_TP();
+      uint32 row = TILE_ROW(tile);
+      if (row) {
+        uint32 base = (tile & 0x1c00) >> kPaletteShift;
+        row >>= 4 * (x & 7);
+        if (tile & 0x2000) {
+          it->x = (uint16)(dst - line), it->row = row, it->base = (uint8)base, it->n = (uint8)curw, it++;
+        } else {
+          uint8 *d = dst;
+          int c = curw;
+          do { uint32 p_ = row & 15; if (p_) *d = (uint8)(base + p_); row >>= 4; d++; } while (--c);
+        }
+      }
+      dst += curw;
+    }
+    uint32 last_tile = 0xffffffff, last_row = 0;  // the same tile again: the same row
+    while (w >= 8) {
+      uint32 tile = TILE_AT(tp);
+      NEXT_TP();
+      uint32 row = tile == last_tile ? last_row : (last_tile = tile, last_row = TILE_ROW(tile));
+      if (row) {
+        uint32 base = (tile & 0x1c00) >> kPaletteShift;
+        if (tile & 0x2000) {
+          it->x = (uint16)(dst - line), it->row = row, it->base = (uint8)base, it->n = 8, it++;
+        } else if (PpuRowOpaque(row)) {
+          // no transparent pixel: no test per pixel
+          dst[0] = (uint8)(base + (row & 15)); dst[1] = (uint8)(base + (row >> 4 & 15));
+          dst[2] = (uint8)(base + (row >> 8 & 15)); dst[3] = (uint8)(base + (row >> 12 & 15));
+          dst[4] = (uint8)(base + (row >> 16 & 15)); dst[5] = (uint8)(base + (row >> 20 & 15));
+          dst[6] = (uint8)(base + (row >> 24 & 15)); dst[7] = (uint8)(base + (row >> 28));
+        } else {
+          PAINT(0); PAINT(1); PAINT(2); PAINT(3); PAINT(4); PAINT(5); PAINT(6); PAINT(7);
+        }
+      }
+      dst += 8, w -= 8;
+    }
+    if (w) {
+      uint32 tile = TILE_AT(tp);
+      uint32 row = TILE_ROW(tile);
+      if (row) {
+        uint32 base = (tile & 0x1c00) >> kPaletteShift;
+        if (tile & 0x2000) {
+          it->x = (uint16)(dst - line), it->row = row, it->base = (uint8)base, it->n = (uint8)w, it++;
+        } else {
+          do { PAINT(0); dst++; } while (--w);
+        }
+      }
+    }
+  }
+  hi->n = (int)(it - hi->item);
+#undef TILE_AT
+#undef TILE_ROW
+#undef NEXT_TP
+}
+
+// The kept high-priority tiles
+static void PpuPaintKept(Ppu *ppu, const PpuPaintList *hi) {
+  for (const PpuPaintItem *it = hi->item, *end = it + hi->n; it != end; it++) {
+    uint8 *dst = (uint8 *)ppu->lineBuf + it->x;
+    uint32 row = it->row, base = it->base;
+    if (it->n == 8) {
+      PAINT(0); PAINT(1); PAINT(2); PAINT(3); PAINT(4); PAINT(5); PAINT(6); PAINT(7);
+    } else {
+      int c = it->n;
+      do { PAINT(0); dst++; } while (--c);
+    }
+  }
+}
+#undef PAINT
+
+// the sprite pixels (ppu_evaluateSprites' objBuffer) of the priorities in levels (bit p)
+static void PpuPaintSprites(Ppu *ppu, uint32 levels) {
+  if (!(ppu->objLevels & levels))
+    return;
+  PpuWindows win;
+  IS_SCREEN_WINDOWED(ppu, 0, 4) ? PpuWindows_Calc(&win, ppu, 4) : PpuWindows_Clear(&win, ppu, 4);
+  uint8 *line = (uint8 *)ppu->lineBuf;
+  for (size_t windex = 0; windex < win.nr; windex++) {
+    if (win.bits & (1 << windex))
+      continue;
+    int left = IntMax(win.edges[windex], ppu->objMinX);
+    int right = IntMin(win.edges[windex + 1], ppu->objMaxX);
+    const PpuZbufType *src = ppu->objBuffer.data + kPpuExtraLeftRight;
+    for (int x = left; x < right; x++) {
+      uint32 v = src[x];
+      if ((v & 0xff) && (levels >> (v >> 14) & 1))
+        line[x] = (uint8)v;
+    }
+  }
+}
+
+static void PpuPaintLine(Ppu *ppu, uint y) {
+  for (int i = 0; i < 64; i++)
+    ppu->lineBuf[i] = 0;                        // the backdrop: CGRAM 0
+  bool spr = ppu->lineHasSprites && IS_SCREEN_ENABLED(ppu, 0, 4);
+  PpuPaintList *hi = ppu->paintHi;              // per context: not on the (small) SH2 stacks
+  PpuPaintBackground(ppu, y, 2, false, &hi[2]); // BG3 lo (its hi tiles kept)
+  if (spr) PpuPaintSprites(ppu, 3);             // sprites 0, 1
+  PpuPaintBackground(ppu, y, 1, true, &hi[1]);  // BG2 lo
+  PpuPaintBackground(ppu, y, 0, true, &hi[0]);  // BG1 lo
+  if (spr) PpuPaintSprites(ppu, 4);             // sprites 2
+  PpuPaintKept(ppu, &hi[1]);                    // BG2 hi
+  PpuPaintKept(ppu, &hi[0]);                    // BG1 hi
+  if (spr) PpuPaintSprites(ppu, 8);             // sprites 3
+  PpuPaintKept(ppu, &hi[2]);                    // BG3 hi
+  uint32 *d32 = (uint32 *)&ppu->renderBuffer[(y - 1) * ppu->renderPitch];
+  for (int i = 0; i < 64; i++)
+    d32[i] = ppu->lineBuf[i];                   // the line buffer is in memory order: as is
+}
+
 static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
   if (ppu->forcedBlank) {
     uint8 *dst = &ppu->renderBuffer[(y - 1) * ppu->renderPitch];
@@ -780,6 +941,11 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
 
   if (ppu->mode == 7 && (ppu->renderFlags & kPpuRenderFlags_4x4Mode7)) {
     PpuDrawMode7Upsampled(ppu, y);
+    return;
+  }
+
+  if ((ppu->renderFlags & kPpuRenderFlags_Index8) && ppu->mode == 1 && !(ppu->mosaicEnabled & 7)) {
+    PpuPaintLine(ppu, y);                       // Z32X: the 32X's common case
     return;
   }
 
@@ -1191,6 +1357,8 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
   if (ppu->renderFlags & kPpuRenderFlags_NoSpriteLimits)
     spritesLeft = tilesLeft = 1024;
   int tilesLeftOrg = tilesLeft;
+  int minx = 256, maxx = 0;
+  uint32 levels = 0;
 
   for (int k = 0, k_end = ppu->objCount; k < k_end; k++) {
     int index = ppu->objList[k] * 2;
@@ -1226,6 +1394,7 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
       if (col + x > -8 - extra_left_right && col + x < 256 + extra_left_right) {
         // break if we found 34 8*1 slivers already
         if (--tilesLeft == 0) {
+          ppu->objLevels = (uint8)levels, ppu->objMinX = (int16)minx, ppu->objMaxX = (int16)maxx;
           return true;
         }
         // figure out which tile this uses, looping within 16x16 pages, and get it's data
@@ -1240,6 +1409,9 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
         PpuZbufType *dst = ppu->objBuffer.data + col + x + px_left + kPpuExtraLeftRight;
         if (px_left)
           bits >>= 4 * px_left;
+        levels |= 1 << ((oam1 >> 12) & 3);
+        minx = IntMin(minx, col + x + px_left);
+        maxx = IntMax(maxx, col + x + px_right);
         for (int px = px_left; px < px_right; px++, dst++, bits >>= 4) {
           uint32 pixel = bits & 15;
           // draw it in the buffer if there is a pixel here, and the buffer there is still empty
@@ -1249,6 +1421,7 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
       }
     }
   }
+  ppu->objLevels = (uint8)levels, ppu->objMinX = (int16)minx, ppu->objMaxX = (int16)maxx;
   return (tilesLeft != tilesLeftOrg);
 }
 

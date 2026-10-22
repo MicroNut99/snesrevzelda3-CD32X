@@ -81,7 +81,9 @@ int main(int argc, char **argv) {
     char hay[4096]; snprintf(hay, sizeof hay, ",%s,", dumps);
     static uint8 idx[256 * 240];
     bool drawn = false;
-    if (getenv("ZH_DRAWALL")) {    /* draw every frame as the game (and the 32X) does: the draw
+    if (getenv("ZH_SKIP") && f % atoi(getenv("ZH_SKIP")) != 0) {
+      ZeldaSkipPpuFrame();         /* frame skip as the 32X: the RAM must stay the same */
+    } else if (getenv("ZH_DRAWALL")) {    /* draw every frame as the game (and the 32X) does: the draw
                                     * changes g_ram (irq_flag, zelda_rtl.c), so hashes for the 32X
                                     * test (expect.bin) must be made with this on */
       if (getenv("ZH_SPLIT")) {    /* the 32X's two-CPU drawing, one part after the other:
@@ -91,8 +93,8 @@ int main(int argc, char **argv) {
         int n = atoi(getenv("ZH_SPLIT"));
         ZeldaDrawPpuFrameBegin(&ctx, idx, 256, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);
         ZeldaDrawCtxCopy(&ctx2, &other, &ctx);
-        ZeldaDrawPpuLines(&ctx2, n, ctx.height);
-        ZeldaDrawPpuLines(&ctx, 0, n - 1);
+        ZeldaDrawPpuLines(&ctx2, n, ctx.height, ctx.height);
+        ZeldaDrawPpuLines(&ctx, 0, n - 1, ctx.height);
         ZeldaDrawPpuFrameEnd(&ctx);
       } else {
         ZeldaDrawPpuFrame(idx, 256, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);

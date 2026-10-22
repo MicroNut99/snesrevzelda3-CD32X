@@ -217,8 +217,10 @@ void ZeldaDrawCtxCopy(ZeldaDrawCtx *dst, Ppu *dst_ppu, const ZeldaDrawCtx *ctx) 
   dst->ppu = dst_ppu;
 }
 
-// Lines 0..last (the frame's 0..height): the events of every line, the drawing of from..last
-void ZeldaDrawPpuLines(ZeldaDrawCtx *ctx, int from, int last) {
+// Lines 0..last (the frame's 0..height): the events of every line (HDMA, the line-128 IRQ),
+// the drawing of from..to. A context that runs the events to the frame's end leaves its PPU as
+// a whole frame's drawing does (registers the HDMA changed stay changed into the next frame).
+void ZeldaDrawPpuLines(ZeldaDrawCtx *ctx, int from, int to, int last) {
   Ppu *ppu = ctx->ppu;
   for (int i = 0; i <= last; i++) {
     if (i == 128 && ctx->irq_flag_copy) {
@@ -227,7 +229,7 @@ void ZeldaDrawPpuLines(ZeldaDrawCtx *ctx, int from, int last) {
       ppu_write(ppu, (uint8)BG3VOFS, 0);
       ppu_write(ppu, (uint8)BG3VOFS, 0);
     }
-    if (i >= from)
+    if (i >= from && i <= to)
       ppu_runLine(ppu, i);
     SimpleHdma_DoLine(&ctx->hdma[0], ppu);
     SimpleHdma_DoLine(&ctx->hdma[1], ppu);
@@ -244,7 +246,15 @@ void ZeldaDrawPpuFrameEnd(ZeldaDrawCtx *ctx) {
 void ZeldaDrawPpuFrame(uint8 *pixel_buffer, size_t pitch, uint32 render_flags) {
   ZeldaDrawCtx ctx;
   ZeldaDrawPpuFrameBegin(&ctx, pixel_buffer, pitch, render_flags);
-  ZeldaDrawPpuLines(&ctx, 0, ctx.height);
+  ZeldaDrawPpuLines(&ctx, 0, ctx.height, ctx.height);
+  ZeldaDrawPpuFrameEnd(&ctx);
+}
+
+// A frame that is not drawn (frame skip): the PPU and the game RAM end as if it had been
+void ZeldaSkipPpuFrame(void) {
+  ZeldaDrawCtx ctx;
+  ZeldaDrawPpuFrameBegin(&ctx, NULL, 0, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);
+  ZeldaDrawPpuLines(&ctx, 1, 0, ctx.height);
   ZeldaDrawPpuFrameEnd(&ctx);
 }
 

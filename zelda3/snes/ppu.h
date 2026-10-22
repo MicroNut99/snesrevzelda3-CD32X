@@ -29,6 +29,17 @@ enum {
 
 typedef uint16_t PpuZbufType;
 
+// Z32X: the high-priority tiles of a layer's line, met while painting its low ones (ppu.c)
+typedef struct PpuPaintItem {
+  uint32_t row;                         // the tile row's pixels, nibble 0 first
+  uint16_t x;                           // where on the line
+  uint8_t base, n;                      // the palette offset, the pixel count
+} PpuPaintItem;
+typedef struct PpuPaintList {
+  int n;
+  PpuPaintItem item[48];                // 33 tiles a line, a few more where windows split it
+} PpuPaintList;
+
 typedef struct PpuPixelPrioBufs {
   // This holds the prio in the upper 8 bits and the color in the lower 8 bits.
   PpuZbufType data[kPpuXPixels];
@@ -122,6 +133,11 @@ struct Ppu {
   // index, and the two high-table bits (size, X bit 8)
   uint8_t objCount;
   bool objBufferDirty;
+  // Z32X: what ppu_evaluateSprites put on this line: the priorities used (bit p), the x span
+  uint8_t objLevels;
+  int16_t objMinX, objMaxX;
+  uint32_t lineBuf[64];                 // Z32X: the line as 8-bit CGRAM indices (PpuPaintLine)
+  PpuPaintList paintHi[3];              // Z32X: BG1..3's high-priority tiles of the line
   uint8_t objList[128];
   uint8_t objHigh[128];
   

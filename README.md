@@ -8,20 +8,23 @@ a Sega CD (CD audio, Rev32XCD / Sonic32XPlus1's CD code) when one is attached.
 music are extracted at build time from your own US ROM (`zelda3.sfc`, SHA256
 `66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb`).
 
-## Status: runs in ares (test harness) - not yet playable
+## Status: plays in ares - game at full speed, picture ~16 fps
 
-The SH-2 runs zelda3's game code and replays the project's chapter-1 recording from power-on.
-After every frame it compares the SNES RAM **and the picture** with the PC reference
-(`pc/zhx`): both match for all 8000 frames checked.
+The SH-2 runs zelda3's game code at the SNES's 60 Hz and draws as often as it can (frame skip).
+With the test build it replays the project's chapter-1 recording and, after every game frame,
+compares the SNES RAM - and every drawn picture - with the PC reference (`pc/zhx`): all 7157 game
+frames and 1193 pictures of the last run match. The `Z32_PLAY` build plays from power-on with the
+pad.
 
 | Part | State |
 |---|---|
 | Assets from the ROM | 684 KB (`zelda3_assets.dat`); with ~750 KB of SH-2 code the game fits a 4 MB cartridge |
-| Memory | SNES WRAM 128 KB + PPU 4.4 KB + VRAM 64 KB + SRAM 8 KB; heap peak ~224 KB of the 32X's 256 KB |
+| Memory | SNES WRAM 128 KB + PPU ~8 KB + VRAM 64 KB + SRAM 8 KB; heap peak ~232 KB of the 32X's 256 KB |
 | Byte order | the SNES RAM, VRAM and data stay little-endian; all game code is C++ with `le16` / `lei16` / `le32` (`types.h`), so a native pointer into SNES memory is a compile error. Checked on the PC with the 13 chapter recordings (~1.07 million frames, RAM and picture compared every frame) |
-| Video | a software SNES PPU writes 8-bit CGRAM indices straight into the 32X frame buffer; the SNES CGRAM is copied 1:1 to the 32X palette (same 15-bit format). Both SH-2s draw: the master the top lines, the slave the rest, the split balanced every frame |
-| Speed (ares) | game logic ~1.4 ms a frame; drawing ~54 ms on each SH-2 -> **~16 fps** average over the first 3300 frames. Next: hot PPU code in SDRAM, cheaper line compositing |
-| Not done | colour math (water, dark rooms, the lantern), brightness fades, mode 7 (the world map) at speed; the controller; SRAM saves; music (CD audio) and effects (PWM) |
+| Video | a software SNES PPU: mode 1 is painted layer by layer in priority order into an 8-bit line (no depth buffer; the same picture as zelda3's), copied into the 32X frame buffer; the SNES CGRAM is the 32X palette (same 15-bit format), with the SNES brightness applied as it is copied. Both SH-2s draw (master the top lines, slave the rest, balanced every frame). Mode 7 and mosaic use zelda3's own line renderer |
+| Speed (ares) | game logic ~1.7 ms a frame; drawing ~42 ms on each SH-2: **game 100% speed, picture ~16 fps** (frame skip up to 6) |
+| Controls | Genesis pad: A = Y (item), B = B (sword), C = A (action), X = X (map), Y = L, Z = R, Start = Start, Mode = Select |
+| Not done | colour math (water, dark rooms, the lantern), mode 7 (the world map) at speed; SRAM saves; music (CD audio) and effects (PWM) |
 
 ### Bugs found in zelda3 by the port
 Out-of-bounds table reads that the SNES resolves by reading on through the ROM; on the PC they
@@ -51,6 +54,7 @@ make -C sh2 Z32_DATA=../build
 python3 tools/make_cart.py sh2/z32.bin cart/cart_md.bin zelda3.32x
 ```
 `sh2/z32_main.cpp` options: `-DZ32_NO_CHECK` (no RAM / picture checks: the real speed),
+`-DZ32_PLAY` (no replay: the pad from power-on), `-DZ32_NO_SKIP` (draw every frame),
 `-DZ32_STOP_ON_BAD` (stop at the first mismatch, show that picture). `pc/zhx` test aids:
 `ZH_REPLAY=n` (chapter), `ZH_HASH`, `ZH_PIXHASH`, `ZH_DRAWALL`, `ZH_SPLIT=line` (the two-CPU
 drawing, one part after the other), `ZH_RAMAT=frame` + `ZH_RAMFILE`, `ZH_PPUDBG=frame`.

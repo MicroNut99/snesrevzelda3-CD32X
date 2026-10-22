@@ -66,7 +66,8 @@ typedef struct ZeldaDrawCtx {
 } ZeldaDrawCtx;
 void ZeldaDrawPpuFrameBegin(ZeldaDrawCtx *ctx, uint8 *pixel_buffer, size_t pitch, uint32 render_flags);
 void ZeldaDrawCtxCopy(ZeldaDrawCtx *dst, struct Ppu *dst_ppu, const ZeldaDrawCtx *ctx);
-void ZeldaDrawPpuLines(ZeldaDrawCtx *ctx, int from, int last);
+void ZeldaDrawPpuLines(ZeldaDrawCtx *ctx, int from, int to, int last);
+void ZeldaSkipPpuFrame(void);
 void ZeldaDrawPpuFrameEnd(ZeldaDrawCtx *ctx);
 void ZeldaRunFrameInternal(uint16 input, int run_what);
 bool ZeldaRunFrame(int input_state);
