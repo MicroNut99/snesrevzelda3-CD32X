@@ -27,7 +27,8 @@ SECTIONS {
         __bss_end = .;
     }
     __heap_start = .;
-    __heap_end = 0x0603C000;                         /* master stack below 0x0603F000, 12 KB */
+    __heap_end = 0x0603D000;                         /* master stack below 0x0603F000, 8 KB (it uses
+                                                        ~0.6 KB at the title; the heap needs the room) */
     ___heap_start = __heap_start;                    /* the C names (SH ELF: one more underscore) */
     ___heap_end = __heap_end;
     _end = __heap_start; _edata = __bss_start; _stack = 0x0603F000;   /* newlib's references */

@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <assert.h>
 #include "ppu.h"
+#include "md_planes.h"
 #include "src/types.h"
 
 static const uint8 kSpriteSizes[8][2] = {
@@ -21,9 +22,21 @@ static int ppu_getPixelForMode7(Ppu* ppu, int x, int layer, bool priority);
 static bool ppu_getWindowState(Ppu* ppu, int layer, int x);
 static bool ppu_evaluateSprites(Ppu* ppu, int line);
 static void PpuDrawWholeLine(Ppu *ppu, uint y);
+void ZeldaVramDirty(uint32 addr, uint32 nwords);   // src/zelda_rtl.c
+#ifdef Z32_HYB_TIMING                            // test: FRT ticks per stage of the master's lines
+extern "C" uint16 z32_frt(void);
+extern "C" { uint32 g_hyb_t[8]; Ppu *g_hyb_time_ctx; }
+#define HT(k) do { if (ppu == g_hyb_time_ctx) { uint16 t_ = z32_frt(); g_hyb_t[k] += (uint16)(t_ - ht_); ht_ = t_; } } while (0)
+#define HT0 uint16 ht_ = z32_frt()
+#else
+#define HT(k) do { } while (0)
+#define HT0 do { } while (0)
+#endif
 
-#define IS_SCREEN_ENABLED(ppu, sub, layer) (ppu->screenEnabled[sub] & (1 << layer))
-#define IS_SCREEN_WINDOWED(ppu, sub, layer) (ppu->screenWindowed[sub] & (1 << layer))
+// Z32X: the SH2 cannot shift by a variable amount (GCC calls a routine): single bits from a table
+static const uint8 kBit8[8] = { 1, 2, 4, 8, 16, 32, 64, 128 };
+#define IS_SCREEN_ENABLED(ppu, sub, layer) (ppu->screenEnabled[sub] & kBit8[layer])
+#define IS_SCREEN_WINDOWED(ppu, sub, layer) (ppu->screenWindowed[sub] & kBit8[layer])
 #define IS_MOSAIC_ENABLED(ppu, layer) ((ppu->mosaicEnabled & (1 << layer)))
 #define GET_WINDOW_FLAGS(ppu, layer) (ppu->windowsel >> (layer * 4))
 enum {
@@ -36,7 +49,7 @@ enum {
 // Z32X: a bitplane byte spread to 8 pixel nibbles, pixel i in bits 4i..4i+3 (bit 0 set from the
 // byte). [0]: pixel i = bit 7 - i (normal), [1]: pixel i = bit i (H flip). One tile row of 8
 // pixels is then 2 or 4 lookups and fixed shifts - the SH2 has no barrel shifter.
-static uint32 g_ppuExpand[2][256];
+uint32 g_ppuExpand[2][256];                      // (md_planes.c uses [1] too)
 #if defined(__GNUC__)
 #define PPU_INLINE inline __attribute__((always_inline))   // Z32X: specialised per caller (bpp4)
 #define PPU_NOINLINE __attribute__((noinline))            // (types.h's NOINLINE is MSVC only)
@@ -107,6 +120,8 @@ void ppu_reset(Ppu* ppu) {
   ppu->objTileAdr2 = 0x5000;
   ppu->objSize = 0;
   memset(&ppu->objBuffer, 0, sizeof(ppu->objBuffer));
+  ppu->objMinX = ppu->objMaxX = 0;              // Z32X: what the sprite line buffer holds (none)
+  ppu->objBufferDirty = false;
   for(int i = 0; i < 4; i++) {
     ppu->bgLayer[i].hScroll = 0;
     ppu->bgLayer[i].vScroll = 0;
@@ -162,6 +177,11 @@ void ppu_saveload(Ppu *ppu, SaveLoadFunc *func, void *ctx) {
     func(ctx, tmp, 4);
   }
   func(ctx, tmp, 123);
+#if defined(Z32X) && defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+  // Z32X: a PC snapshot's words are little-endian (the VRAM is little-endian here too)
+  for (int i = 0; i < 0x100; i++) ppu->cgram[i] = (uint16_t)(ppu->cgram[i] >> 8 | ppu->cgram[i] << 8);
+  for (int i = 0; i < 4; i++) ppu->bgLayer[i].tilemapAdr = (uint16_t)(ppu->bgLayer[i].tilemapAdr >> 8 | ppu->bgLayer[i].tilemapAdr << 8);
+#endif
 }
 
 // Z32X: can this frame's picture differ from its CGRAM indices through the palette - colour
@@ -200,6 +220,17 @@ void PpuBeginDrawing(Ppu *ppu, uint8_t *pixels, size_t pitch, uint32_t render_fl
   }
   ppu->objCount = (uint8)n;
   ppu->objBufferDirty = true;
+  // Z32X: the lines any of them is on (ppu_runLine skips the others' sprite search)
+  memset(ppu->objLines, 0, sizeof ppu->objLines);
+  for (int k = 0; k < n; k++) {
+    int i = ppu->objList[k];
+    int yy = ppu->oam[i * 2] >> 8, size = kSpriteSizes[ppu->objSize][(ppu->objHigh[k] >> 1) & 1];
+    for (int r = 0; r < size; r++) {
+      int l = (yy + r) & 0xff;
+      ppu->objLines[l >> 3] |= kBit8[l & 7];
+    }
+  }
+  ppu->regsChanged &= ~4;
 
   // Cache the brightness computation
   if (ppu->brightness != ppu->lastBrightnessMult) {
@@ -221,12 +252,14 @@ void PpuBeginDrawing(Ppu *ppu, uint8_t *pixels, size_t pitch, uint32_t render_fl
     }
   }
 
+#ifndef Z32X
   if (PpuGetCurrentRenderScale(ppu, ppu->renderFlags) == 4) {
     for (int i = 0; i < 256; i++) {
       uint32 color = ppu->cgram[i];
       ppu->colorMapRgb[i] = ppu->brightnessMult[color & 0x1f] << 16 | ppu->brightnessMult[(color >> 5) & 0x1f] << 8 | ppu->brightnessMult[(color >> 10) & 0x1f];
     }
   }
+#endif
 }
 
 static inline void ClearBackdrop(PpuPixelPrioBufs *buf) {
@@ -235,7 +268,13 @@ static inline void ClearBackdrop(PpuPixelPrioBufs *buf) {
 }
 
 
+#ifdef ZH_MDSTAT
+void (*g_zh_line_hook)(Ppu *ppu, int line);   // PC analysis (pc/zh_mdstat.c): each line's PPU state
+#endif
 void ppu_runLine(Ppu *ppu, int line) {
+#ifdef ZH_MDSTAT
+  if (g_zh_line_hook) g_zh_line_hook(ppu, line);
+#endif
   if(line != 0) {
     if (ppu->mosaicSize != ppu->lastMosaicModulo) {
       int mod = ppu->mosaicSize;
@@ -246,9 +285,20 @@ void ppu_runLine(Ppu *ppu, int line) {
       }
     }
     // evaluate sprites
-    if (ppu->objBufferDirty)
-      ClearBackdrop(&ppu->objBuffer);
-    ppu->lineHasSprites = !ppu->forcedBlank && ppu_evaluateSprites(ppu, line - 1);
+    if (ppu->objBufferDirty) {                  // Z32X: what the last line drew: [objMinX, objMaxX)
+      PpuZbufType *ob = ppu->objBuffer.data + kPpuExtraLeftRight;
+      for (int x = IntMax(ppu->objMinX, 0), e = IntMin(ppu->objMaxX, 256); x < e; x++) ob[x] = 0x0500;
+    }
+#ifdef Z32_HYB_TIMING
+    uint16 et_ = z32_frt();
+#endif
+    // Z32X: no sprite on this line (PpuBeginDrawing's objLines; OBSEL rewritten: look anyway)
+    bool any = !ppu->forcedBlank && ((ppu->objLines[(line - 1) >> 3] & kBit8[(line - 1) & 7]) || (ppu->regsChanged & 4));
+    ppu->lineHasSprites = any && ppu_evaluateSprites(ppu, line - 1);
+    if (!any) ppu->objMinX = ppu->objMaxX = 0, ppu->objLevels = 0;
+#ifdef Z32_HYB_TIMING
+    if (ppu == g_hyb_time_ctx) g_hyb_t[5] += (uint16)(z32_frt() - et_), g_hyb_t[6]++;
+#endif
     ppu->objBufferDirty = ppu->lineHasSprites;  // nothing is drawn into it otherwise
 
     // outside of visible range?
@@ -665,6 +715,7 @@ static FORCEINLINE float FloatInterpolate(float x, float xmin, float xmax, float
 // Upsampled version of mode7 rendering. Draws everything in 4x the normal resolution.
 // Draws directly to the pixel buffer and bypasses any math, and supports only
 // a subset of the normal features (all that zelda needs)
+#ifndef Z32X
 static void PpuDrawMode7Upsampled(Ppu *ppu, uint y) {
   // expand 13-bit values to signed values
   uint32 xCenter = ((int16_t)(ppu->m7matrix[4] << 3)) >> 3, yCenter = ((int16_t)(ppu->m7matrix[5] << 3)) >> 3;
@@ -756,6 +807,7 @@ static void PpuDrawMode7Upsampled(Ppu *ppu, uint y) {
   }
 #undef DRAW_PIXEL
 }
+#endif
 
 static void PpuDrawBackgrounds(Ppu *ppu, int y, bool sub) {
 // Top 4 bits contain the prio level, and bottom 4 bits the layer type.
@@ -812,7 +864,7 @@ static void PpuDrawBackgrounds(Ppu *ppu, int y, bool sub) {
 // One pass over a layer's line: the low-priority tiles are painted, the high ones go into hi
 // (one copy per kTrack / bpp4: the line's code must fit the SH2's 4 KB cache - inlined at every
 // call it did not, and each miss refills from the cartridge)
-template <bool kTrack, bool bpp4>
+template <bool kTrack, bool bpp4, uint32 kAdd = 0>   // kAdd: added to the low tiles' indices (Hybrid)
 static PPU_NOINLINE void PpuPaintBackground(Ppu *ppu, uint y, bool sub, uint layer, PpuPaintList *hi, uint8 *line) {
   const int kTileWords = bpp4 ? 16 : 8, kPaletteShift = bpp4 ? 6 : 8;
   const uint32 lid = (ppu->mathEnabled >> layer) & 1;   // kTrack: the math flag
@@ -857,6 +909,7 @@ static PPU_NOINLINE void PpuPaintBackground(Ppu *ppu, uint y, bool sub, uint lay
         if (tile & 0x2000) {
           it->x = (uint16)(dst - line), it->row = row, it->base = (uint8)base, it->n = (uint8)curw, it++;
         } else {
+          base += kAdd;
           uint8 *d = dst;
           int c = curw;
           do { uint32 p_ = row & 15; if (p_) { *d = (uint8)(base + p_); if (kTrack) d[256] = (uint8)lid; } row >>= 4; d++; } while (--c);
@@ -873,7 +926,7 @@ static PPU_NOINLINE void PpuPaintBackground(Ppu *ppu, uint y, bool sub, uint lay
         uint32 base = (tile & 0x1c00) >> kPaletteShift;
         if (tile & 0x2000) {
           it->x = (uint16)(dst - line), it->row = row, it->base = (uint8)base, it->n = 8, it++;
-        } else if (PpuRowOpaque(row)) {
+        } else if (base += kAdd, PpuRowOpaque(row)) {
           // no transparent pixel: no test per pixel
           dst[0] = (uint8)(base + (row & 15)); dst[1] = (uint8)(base + (row >> 4 & 15));
           dst[2] = (uint8)(base + (row >> 8 & 15)); dst[3] = (uint8)(base + (row >> 12 & 15));
@@ -895,6 +948,7 @@ static PPU_NOINLINE void PpuPaintBackground(Ppu *ppu, uint y, bool sub, uint lay
         if (tile & 0x2000) {
           it->x = (uint16)(dst - line), it->row = row, it->base = (uint8)base, it->n = (uint8)w, it++;
         } else {
+          base += kAdd;
           do { PAINT(0); dst++; } while (--w);
         }
       }
@@ -935,9 +989,10 @@ static void PpuPaintSprites(Ppu *ppu, bool sub, uint32 levels, uint8 *line) {
     int left = IntMax(win.edges[windex], ppu->objMinX);
     int right = IntMin(win.edges[windex + 1], ppu->objMaxX);
     const PpuZbufType *src = ppu->objBuffer.data + kPpuExtraLeftRight;
+    const uint8 ok[4] = { (uint8)(levels & 1), (uint8)(levels & 2), (uint8)(levels & 4), (uint8)(levels & 8) };
     for (int x = left; x < right; x++) {
       uint32 v = src[x];
-      if ((v & 0xff) && (levels >> (v >> 14) & 1)) {
+      if ((v & 0xff) && ok[v >> 14]) {
         line[x] = (uint8)v;
         if (kTrack)
           line[x + 256] = (uint8)((ppu->mathEnabled >> (v >> 8 & 15)) & 1);
@@ -969,6 +1024,294 @@ static PPU_NOINLINE void PpuPaintScreen(Ppu *ppu, uint y, bool sub, uint8 *line)
   PpuPaintKept<kTrack>(&hi[0], line, me & 1);                        // BG1 hi
   if (spr) PpuPaintSprites<kTrack>(ppu, sub, 8, line);               // sprites 3
   PpuPaintKept<kTrack>(&hi[2], line, (me >> 2) & 1);                 // BG3 hi
+}
+
+
+// Z32X "rip and tear" (kPpuRenderFlags_Hybrid, md_planes.h): BG1 and BG2 are on the Genesis's
+// planes - but for the cells of palettes the Genesis has no line for (MdHybrid's lists). This
+// line holds what the 32X draws over / under the planes, in PpuPaintScreen's order:
+//   BG3 low, sprites 0 / 1    behind the planes (through bit: they show where the Genesis has none)
+//   BG2 / BG1 low cells, sprites 2, BG2 / BG1 high cells     in front, then "punched": 0 (see
+//                             through) where a Genesis pixel of a higher layer is
+//   sprites 3, BG3 high       in front
+// Punching is right for everything on the line at that point: all of it is below that layer.
+// Every line also checks that the Genesis can show it as the frame was sent (the scroll, no
+// window or colour math on it...): if not, hybridFail - the frame is drawn again, whole.
+static PPU_NOINLINE void PpuHybridCheck(Ppu *ppu) {
+  const BgLayer *b1 = &ppu->bgLayer[0], *b2 = &ppu->bgLayer[1];
+  const MdHybrid *h = ppu->hybrid;
+  // the registers the answer depends on, as on the last line checked: the same answer
+  uint32 k0 = b1->hScroll | b2->hScroll << 16, k1 = b1->vScroll | b2->vScroll << 16;
+  uint32 k2 = ppu->window1left | ppu->window1right << 8 | ppu->window2left << 16 | ppu->window2right << 24;
+  uint32 k3 = ppu->windowsel;
+  uint32 k4 = ppu->clipMode | ppu->preventMathMode << 2 | ppu->mathEnabled << 4 | ppu->halfColor << 10 |
+              ppu->addSubscreen << 11 | (ppu->screenEnabled[1] != 0) << 12 | ppu->screenEnabled[0] << 13 |
+              ppu->screenWindowed[0] << 18 | ppu->mode << 23 | ppu->forcedBlank << 26 | (ppu->mosaicEnabled & 3) << 27 |
+              ((ppu->fixedColorR | ppu->fixedColorG | ppu->fixedColorB) != 0) << 29;
+  uint32 *key = ppu->hybridKey;
+  if (key[0] == k0 && key[1] == k1 && key[2] == k2 && key[3] == k3 && key[4] == k4 && key[5] == (uint32)(uintptr_t)h)
+    return;                                     // as the last line: it passed (a failure sticks)
+  key[0] = k0, key[1] = k1, key[2] = k2, key[3] = k3, key[4] = k4, key[5] = (uint32)(uintptr_t)h;
+  if (ppu->forcedBlank || ppu->mode != 1 || (ppu->mosaicEnabled & 7) ||
+      b1->hScroll != h->sig_hs[0] || b2->hScroll != h->sig_hs[1] ||
+      b1->vScroll != h->sig_vs[0] || b2->vScroll != h->sig_vs[1] || (ppu->screenEnabled[0] & 3) != h->layers ||
+      ((ppu->screenWindowed[0] & 3) && (ppu->windowsel & 0xaa))) {
+    ppu->hybridFail = 1;
+    return;
+  }
+  if (ppu->clipMode == 0 && (ppu->preventMathMode == 3 || !ppu->mathEnabled))
+    return;
+  PpuWindows cwin;                              // the colour window / math on this line (PpuPaintLine)
+  PpuWindows_Calc(&cwin, ppu, 5);
+  static const uint8 kCwBits[8] = { 0x00, 0xff, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00 };
+  uint32 cw = ((cwin.bits & kCwBits[ppu->clipMode]) ^ kCwBits[ppu->clipMode + 4]) |
+              ((cwin.bits & kCwBits[ppu->preventMathMode]) ^ kCwBits[ppu->preventMathMode + 4]) << 8;
+  uint32 fixed = ppu->fixedColorR | ppu->fixedColorG << 5 | ppu->fixedColorB << 10;
+  bool may = fixed != 0 || ppu->halfColor || (ppu->addSubscreen && ppu->screenEnabled[1] != 0);
+  for (uint32 w = 0; w < cwin.nr; w++, cw >>= 1) {
+    if (!(cw & 1) || ((cw & 0x100) && ppu->mathEnabled && may)) {
+      ppu->hybridFail = 1;
+      return;
+    }
+  }
+}
+
+// sprites 0 / 1: their palettes' copies behind the planes (CRAM 64 + slot * 16)
+static PPU_NOINLINE void PpuHybridSpritesBehind(Ppu *ppu, uint8 *line) {
+  PpuWindows win;
+  IS_SCREEN_WINDOWED(ppu, 0, 4) ? PpuWindows_Calc(&win, ppu, 4) : PpuWindows_Clear(&win, ppu, 4);
+  const uint8 *slot = ppu->hybrid->spr_slot;
+  for (size_t windex = 0; windex < win.nr; windex++) {
+    if (win.bits & (1 << windex))
+      continue;
+    int left = IntMax(win.edges[windex], ppu->objMinX);
+    int right = IntMin(win.edges[windex + 1], ppu->objMaxX);
+    const PpuZbufType *src = ppu->objBuffer.data + kPpuExtraLeftRight;
+    for (int x = left; x < right; x++) {
+      uint32 v = src[x];
+      if ((v & 0xff) && (v >> 14) < 2) {
+        uint32 s = slot[(v >> 4) & 7];
+        if (s > 3) { ppu->hybridFail = 1; continue; }
+        line[x] = (uint8)(64 + s * 16 + (v & 15));
+      }
+    }
+  }
+}
+
+// the BG layer's map word at screen x (and its row of pixels at line y)
+#define HYB_ROW(bg, yy, e) PpuTileRow(&ppu->vram[((bg)->tileAdr + (((e) & 0x8000) ? 7 - ((yy) & 7) : ((yy) & 7)) + ((e) & 0x3ff) * 16) & 0x7fff], true, g_ppuExpand[((e) >> 14) & 1])
+
+// line[x0..x1) = 0 where the Genesis has a pixel of layer 0 / 1 (BG1 / BG2) at a priority in
+// which (bit 0 BG1 lo, 1 BG1 hi, 2 BG2 lo, 3 BG2 hi) - cells of palettes on the Genesis only
+static PPU_NOINLINE void PpuHybridPunch(Ppu *ppu, uint y, uint8 *line, int x0, int x1, uint32 which) {
+  if (x0 < 0) x0 = 0;
+  if (x1 > 256) x1 = 256;
+  uint32 md_pal = ppu->hybrid->md_pal;
+  for (uint layer = 0; layer < 2; layer++, which >>= 2) {
+    if (!(which & 3) || !IS_SCREEN_ENABLED(ppu, 0, layer))
+      continue;
+    BgLayer *bg = &ppu->bgLayer[layer];
+    uint yy = y + bg->vScroll;
+    int sc_offs = bg->tilemapAdr + (((yy >> 3) & 0x1f) << 5) + ((yy & 0x100) ? 0x800 : 0);
+    uint hs = bg->hScroll;
+    for (int sx = x0 - (int)((x0 + hs) & 7); sx < x1; sx += 8) {
+      uint x = sx + hs;                         // the map x of the cell's pixel 0
+      uint32 e = ppu->vram[(sc_offs + ((x >> 3) & 0x1f) + ((x & 0x100) ? 0x400 : 0)) & 0x7fff];
+      if (!(which & ((e & 0x2000) ? 2 : 1)) || !(md_pal & kBit8[e >> 10 & 7]))
+        continue;
+      uint32 row = HYB_ROW(bg, yy, e);
+      for (int k = 0; k < 8; k++, row >>= 4) {
+        int px = sx + k;
+        if ((row & 15) && px >= x0 && px < x1)
+          line[px] = 0;
+      }
+    }
+  }
+}
+
+// the layer's cells off the Genesis (MdHybrid's lists) of priority hi on line y: painted in
+// front, then punched by the Genesis's pixels above them (punch: the which of PpuHybridPunch)
+static PPU_NOINLINE void PpuHybridCells(Ppu *ppu, uint y, uint8 *line, uint layer, uint32 hi, uint32 punch, int *span) {
+  const MdHybrid *h = ppu->hybrid;
+  if (!h->nrows[layer] || !IS_SCREEN_ENABLED(ppu, 0, layer))
+    return;
+  BgLayer *bg = &ppu->bgLayer[layer];
+  uint yy = y + bg->vScroll;
+  uint r = (((yy >> 3) & 63) - h->row0[layer]) & 63;
+  if (r >= h->nrows[layer])
+    return;
+  for (uint i = h->start[layer][r], end = h->start[layer][r + 1]; i < end; i++) {
+    uint32 e = h->cell[layer][i];
+    if ((e >> 13 & 1) != hi)
+      continue;
+    int sx = (int)((h->cx[layer][i] * 8 - bg->hScroll) & 511);
+    if (sx >= 256) sx -= 512;                   // the cell cut by the left edge
+    if (sx <= -8 || sx >= 256)
+      continue;
+    uint32 row = HYB_ROW(bg, yy, e), base = h->off_base[e >> 10 & 7];
+    span[0] = IntMin(span[0], sx), span[1] = IntMax(span[1], sx + 8);
+    for (int k = 0; k < 8; k++, row >>= 4) {
+      int px = sx + k;
+      if ((row & 15) && px >= 0 && px < 256)
+        line[px] = (uint8)(base + (row & 15));
+    }
+    if (punch)
+      PpuHybridPunch(ppu, y, line, sx, sx + 8, punch);
+  }
+}
+
+// what each frame buffer line holds besides 0 (in 4-pixel longs: [lo, hi)): only that and the new
+// content are written - most lines of a Genesis-planes frame are nothing but 0. A line is drawn
+// by one SH2 a frame; both purge their caches before a frame (sh2/z32_main.cpp: the other may
+// have drawn the line last time), so plain cached accesses see what it wrote (write-through).
+static uint8 g_hyb_span[2][224][2];
+static uint8 g_hyb_sig[2][224][4];               // a BG3-only line: what it was drawn from (0: other)
+#define HYB_SPAN(fb, y) (g_hyb_span[fb][y])
+#define HYB_SIG(fb, y) (g_hyb_sig[fb][y])
+void PpuHybridSpansFull(int fb) {                // the buffer holds another picture: all of it
+  for (int y = 0; y < 224; y++) {
+    HYB_SPAN(fb, y)[0] = 0, HYB_SPAN(fb, y)[1] = 64;
+    HYB_SIG(fb, y)[0] = HYB_SIG(fb, y)[1] = HYB_SIG(fb, y)[2] = HYB_SIG(fb, y)[3] = 0;
+  }
+}
+// any cell off the Genesis on line y (MdHybrid's lists)
+static bool HybridLineHasCells(Ppu *ppu, uint y) {
+  const MdHybrid *h = ppu->hybrid;
+  for (uint layer = 0; layer < 2; layer++) {
+    if (!h->nrows[layer]) continue;
+    uint r = ((((y + ppu->bgLayer[layer].vScroll) >> 3) & 63) - h->row0[layer]) & 63;
+    if (r < h->nrows[layer] && h->start[layer][r] != h->start[layer][r + 1]) return true;
+  }
+  return false;
+}
+
+#ifndef Z32X                                     // PC: what the Genesis-planes lines did (pc/zh_md.c)
+long g_hyb_count[4];                             // lines, skipped (as drawn last time), BG3 painted, with sprites
+#define HYB_COUNT(k) (g_hyb_count[k]++)
+#else
+#define HYB_COUNT(k) ((void)0)
+#endif
+// BG3's cells of line y that are not empty (MdHybrid's column masks): the low ones painted behind
+// the planes (+32), the high ones kept for the end - as PpuPaintBackground, without its walk over
+// the empty cells (most of BG3 is empty; the status bar and the text are a few cells)
+static PPU_NOINLINE void PpuHybridBg3(Ppu *ppu, uint y, uint8 *line, PpuPaintList *hi, int *span) {
+  const MdHybrid *h = ppu->hybrid;
+  BgLayer *bg = &ppu->bgLayer[2];
+  PpuPaintItem *it = hi->item;
+  uint yy = y + bg->vScroll;
+  uint r = ((yy >> 3) & 31) + ((yy & 0x100) && bg->tilemapHigher ? 32 : 0);
+  uint cols = bg->tilemapWider ? 64 : 32, width = cols * 8;
+  int sc_offs = bg->tilemapAdr + (((yy >> 3) & 0x1f) << 5) + ((yy & 0x100) && bg->tilemapHigher ? (bg->tilemapWider ? 0x800 : 0x400) : 0);
+  int tileadr1 = bg->tileAdr + 7 - (yy & 7), tileadr0 = bg->tileAdr + (yy & 7);
+  uint hs = bg->hScroll;
+  for (uint half = 0; half < (cols >> 5); half++) {
+    for (uint32 mask = h->bg3_cols[r][half], c = half * 32; mask; mask >>= 1, c++) {
+      if (!(mask & 1)) continue;
+      int sx0 = (int)((c * 8 - hs) & (width - 1));
+      if (sx0 >= 256 && sx0 <= (int)width - 8) continue;   // not on screen
+      uint32 e = ppu->vram[(sc_offs + (c & 31) + (c >= 32 ? 0x400 : 0)) & 0x7fff];
+      uint32 row0 = PpuTileRow(&ppu->vram[(((e & 0x8000) ? tileadr1 : tileadr0) + (e & 0x3ff) * 8) & 0x7fff], false, g_ppuExpand[(e >> 14) & 1]);
+      if (!row0) continue;
+      uint32 base = (e & 0x1c00) >> 8;
+      // where it shows: at sx0 if on screen, and at sx0 - width if that is cut by the left edge
+      // (a 256-wide map shows the cell at both edges when the scroll is not a multiple of 8)
+      for (int sx = sx0; sx > -8; sx -= width) {
+        if (sx >= 256) continue;
+        uint32 row = row0;
+        int x = sx, n = 8;
+        if (sx < 0) row >>= 4 * -sx, n = 8 + sx, x = 0;
+        else if (sx > 248) n = 256 - sx;
+        span[0] = IntMin(span[0], x), span[1] = IntMax(span[1], x + n);
+        if (e & 0x2000) {
+          it->x = (uint16)x, it->row = row, it->base = (uint8)base, it->n = (uint8)n, it++;
+        } else {
+          uint8 *d = line + x;
+          for (int k = 0; k < n; k++, row >>= 4)
+            if (row & 15) d[k] = (uint8)(base + 32 + (row & 15));
+        }
+      }
+    }
+  }
+  hi->n = (int)(it - hi->item);
+}
+
+static PPU_NOINLINE void PpuPaintHybridLine(Ppu *ppu, uint y) {
+  HT0;
+  HYB_COUNT(0);
+  uint8 *line = (uint8 *)ppu->lineBuf;          // 0 between lines: only the content is cleared
+  uint32 *l32 = (uint32 *)line;
+  const MdHybrid *h = ppu->hybrid;
+  if (ppu->regsChanged & 3) {                   // only a register write can change the answer:
+    uint32 c = ppu->regsChanged;                //   the window positions only matter for the colour
+    ppu->regsChanged &= ~3;                     //   window / math, or a windowed BG1 / BG2
+    if ((c & 2) || ppu->clipMode || (ppu->preventMathMode != 3 && ppu->mathEnabled) || (ppu->screenWindowed[0] & 3))
+      PpuHybridCheck(ppu);
+  }
+  HT(0);
+  // a line of BG3 only (no sprite, no cell off the Genesis) whose BG3 is as when this frame
+  // buffer's line was drawn last: it is still there - nothing to draw, nothing to write
+  bool spr = ppu->lineHasSprites && IS_SCREEN_ENABLED(ppu, 0, 4) && !ppu->forcedBlank;
+  const BgLayer *b3 = &ppu->bgLayer[2];
+  uint yy3 = y + b3->vScroll;
+  uint r3 = ((yy3 >> 3) & 31) + ((yy3 & 0x100) && b3->tilemapHigher ? 32 : 0);
+  uint32 sig = 0;
+  if (!spr && !ppu->forcedBlank && !(ppu->screenWindowed[0] & 4) && !HybridLineHasCells(ppu, y)) {
+    // generation 10 bits, H scroll 10, map row 6, line in the row 3, BG3 on, 1 (valid)
+    sig = (uint32)(h->bg3_row_gen[r3] & 0x3ff) << 22 | (b3->hScroll & 0x3ff) << 12 | r3 << 6 | (yy3 & 7) << 3 |
+          (ppu->screenEnabled[0] & 4) | 1;
+    uint8 *sp = HYB_SIG(h->fb, y - 1);
+    uint32 old = (uint32)sp[0] << 24 | sp[1] << 16 | sp[2] << 8 | sp[3];
+    if (old == sig) {
+      HT(4);
+      HYB_COUNT(1);
+      return;
+    }
+  }
+  {
+    uint8 *sp = HYB_SIG(h->fb, y - 1);
+    sp[0] = (uint8)(sig >> 24), sp[1] = (uint8)(sig >> 16), sp[2] = (uint8)(sig >> 8), sp[3] = (uint8)sig;
+  }
+  int span[2] = { 256, 0 };
+  if (!ppu->forcedBlank) {
+    PpuPaintList *hi = ppu->paintHi;
+    if (!(h->bg3_rows[r3 >> 3] & kBit8[r3 & 7]) || !IS_SCREEN_ENABLED(ppu, 0, 2)) {
+      hi[2].n = 0;                              // a row of empty tiles
+    } else if (!IS_SCREEN_WINDOWED(ppu, 0, 2)) {
+      PpuHybridBg3(ppu, y, line, &hi[2], span);                             // BG3 lo, behind (33-63)
+      HYB_COUNT(2);
+    } else {
+      PpuPaintBackground<false, false, 32>(ppu, y, false, 2, &hi[2], line);   // BG3 lo, behind (33-63)
+      span[0] = 0, span[1] = 256;
+      HYB_COUNT(2);
+    }
+    HT(1);
+    if (spr) span[0] = IntMin(span[0], ppu->objMinX), span[1] = IntMax(span[1], ppu->objMaxX), HYB_COUNT(3);
+    if (spr && (ppu->objLevels & 3)) PpuHybridSpritesBehind(ppu, line);    // sprites 0, 1, behind
+    PpuHybridCells(ppu, y, line, 1, 0, 1 | 2, span);                        // BG2 lo cells: under BG1
+    PpuHybridCells(ppu, y, line, 0, 0, 8, span);                            // BG1 lo cells: under BG2 hi
+    if (spr && (ppu->objLevels & 4)) {
+      PpuPaintSprites<false>(ppu, false, 4, line);                         // sprites 2
+      PpuHybridPunch(ppu, y, line, ppu->objMinX, ppu->objMaxX, 2 | 8);     //   under BG1 / BG2 hi
+    }
+    PpuHybridCells(ppu, y, line, 1, 1, 2, span);                            // BG2 hi cells: under BG1 hi
+    PpuHybridCells(ppu, y, line, 0, 1, 0, span);                            // BG1 hi cells
+    if (spr && (ppu->objLevels & 8)) PpuPaintSprites<false>(ppu, false, 8, line);   // sprites 3
+    HT(2);
+    PpuPaintKept<false>(&hi[2], line, 0);                                   // BG3 hi
+    HT(3);
+  }
+  int lo = IntMax(span[0], 0) >> 2, hi4 = (IntMin(span[1], 256) + 3) >> 2;
+  if (lo >= hi4) lo = hi4 = 0;
+  uint8 *old = HYB_SPAN(h->fb, y - 1);
+  int w0 = IntMin(lo, old[0]), w1 = IntMax(hi4, old[1]);
+  if (lo == hi4) w0 = old[0], w1 = old[1];
+  uint32 *d32 = (uint32 *)&ppu->renderBuffer[(y - 1) * ppu->renderPitch];
+  for (int i = w0; i < w1; i++)
+    d32[i] = l32[i];
+  for (int i = lo; i < hi4; i++)
+    l32[i] = 0;
+  old[0] = (uint8)lo, old[1] = (uint8)hi4;
+  HT(4);
 }
 
 // Z32X: the 32X's mode-1 line. Index8: the main screen's CGRAM indices. Rgb15: the colour after
@@ -1158,6 +1501,10 @@ static PPU_NOINLINE void PpuPaintLine(Ppu *ppu, uint y) {
 }
 
 static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
+  if (ppu->renderFlags & kPpuRenderFlags_Hybrid) {   // Z32X: BG1 / BG2 on the Genesis
+    PpuPaintHybridLine(ppu, y);
+    return;
+  }
   if (ppu->forcedBlank) {
     uint8 *dst = &ppu->renderBuffer[(y - 1) * ppu->renderPitch];
     size_t n = (ppu->renderFlags & kPpuRenderFlags_Index8 ? 1 : ppu->renderFlags & kPpuRenderFlags_Rgb15 ? 2 : sizeof(uint32)) * (256 + ppu->extraLeftRight * 2);
@@ -1168,10 +1515,12 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
     return;
   }
 
+#ifndef Z32X
   if (ppu->mode == 7 && (ppu->renderFlags & kPpuRenderFlags_4x4Mode7)) {
     PpuDrawMode7Upsampled(ppu, y);
     return;
   }
+#endif
 
   if ((ppu->renderFlags & (kPpuRenderFlags_Index8 | kPpuRenderFlags_Rgb15)) && !(ppu->renderFlags & kPpuRenderFlags_NoPaint) &&
       ppu->mode == 1 && !(ppu->mosaicEnabled & 7)) {
@@ -1645,7 +1994,7 @@ static bool ppu_evaluateSprites(Ppu* ppu, int line) {
         PpuZbufType *dst = ppu->objBuffer.data + col + x + px_left + kPpuExtraLeftRight;
         if (px_left)
           bits >>= 4 * px_left;
-        levels |= 1 << ((oam1 >> 12) & 3);
+        levels |= kBit8[(oam1 >> 12) & 3];
         minx = IntMin(minx, col + x + px_left);
         maxx = IntMax(maxx, col + x + px_right);
         for (int px = px_left; px < px_right; px++, dst++, bits >>= 4) {
@@ -1673,7 +2022,15 @@ uint8_t ppu_read(Ppu* ppu, uint8_t adr) {
   return 0xff;
 }
 
+// Z32X: the registers a Genesis-planes line is checked against (PpuHybridCheck): bit 0 the
+// window positions, bit 1 the others (INIDISP, BGMODE, MOSAIC, BG1/BG2 scroll, the window
+// settings, TM/TS/TMW/TSW, the colour math); bit 2: OBSEL (the frame's sprite lines are unknown)
+static const uint8 kPpuRegCheck[0x40] = {
+  2, 4, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2, 2, 2,  2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 2, 2, 2, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2,  2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+};
 void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
+  if (adr < 0x40) ppu->regsChanged |= kPpuRegCheck[adr];
   switch(adr) {
     case 0x00: {  // INIDISP
       ppu->brightness = val & 0xf;
@@ -1784,12 +2141,14 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
     }
     case 0x18: {  // VMDATAL
       uint16_t vramAdr = ppu->vramPointer;
+      ZeldaVramDirty(vramAdr & 0x7fff, 1);
       ppu->vram[vramAdr & 0x7fff] = (ppu->vram[vramAdr & 0x7fff] & 0xff00) | val;
       if(!ppu->vramIncrementOnHigh) ppu->vramPointer += ppu->vramIncrement;
       break;
     }
     case 0x19: {  // VMDATAH
       uint16_t vramAdr = ppu->vramPointer;
+      ZeldaVramDirty(vramAdr & 0x7fff, 1);
       ppu->vram[vramAdr & 0x7fff] = (ppu->vram[vramAdr & 0x7fff] & 0x00ff) | (val << 8);
       if(ppu->vramIncrementOnHigh) ppu->vramPointer += ppu->vramIncrement;
       break;
@@ -1839,16 +2198,20 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
     case 0x25:  // WOBJSEL
       ppu->windowsel = (ppu->windowsel & ~0xff0000) | (val << 16);
       break;
-    case 0x26:
+    case 0x26:                                  // Z32X: a window position that changes (bit 0)
+      ppu->regsChanged |= ppu->window1left != val;
       ppu->window1left = val;
       break;
     case 0x27:
+      ppu->regsChanged |= ppu->window1right != val;
       ppu->window1right = val;
       break;
     case 0x28:
+      ppu->regsChanged |= ppu->window2left != val;
       ppu->window2left = val;
       break;
     case 0x29:
+      ppu->regsChanged |= ppu->window2right != val;
       ppu->window2right = val;
       break;
     case 0x2a:  // WBGLOG

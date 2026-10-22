@@ -1,9 +1,14 @@
 | ===========================================================================================
 | U-R-R (from the Kobo Deluxe 32X cartridge) - Genesis (68000) side.   (cart/cart_md.s)
 |
-| ZELDA 3 32X: U-R-R's starfield is gone.  Both Genesis planes are cleared at start-up and the
-|   backdrop is black, so only the 32X picture (the SNES screen) shows.  COMM12 is free for the
-|   SH2's own status (it was the starfield's scroll velocity).
+| ZELDA 3 32X "RIP AND TEAR": the Genesis's planes show the SNES's BG1 (plane A) and BG2 (plane B),
+|   scrolled by the Genesis video chip; the 32X draws the sprites and the status bar over them
+|   (zelda3/snes/md_planes.h).  The SH2 sends writes for the Genesis video chip ("ops") with
+|   command 70; command 71 commits them, and the next V-blank applies them - the V-blank the SH2
+|   then shows its matching 32X picture in.  COMM12 = the count of applied commits (the SH2 waits
+|   for it to change, then swaps the 32X frame buffer, still in that V-blank).
+|   Genesis video RAM: tiles 0x0000-0x7FFF, plane A 0x8000, B 0xA000, H scroll 0xC000, sprites
+|   0xC400, a blank tile at 0xC800 (tile 0x640), window 0xD000, an empty plane 0xE000.
 |
 | Linked at 0x880800 = ROM offset 0x800, seen through the 32X's fixed cartridge window.  The
 | 32X vector jump list at ROM 0x200 (part of the standard boot block) sends the 68000 to fixed
@@ -30,6 +35,11 @@
 |     64  CD player    (v18) COMM2 = 'P' play from track COMM8 on, 'S' stop, 'Z' pause/go on
 |     65  mirror read  Zelda 3 32X: COMM8:COMM10 = long COMM2 (0-2047) of the SRAM mirror
 |     66  mirror write Zelda 3 32X: long COMM2 (0-2047) of the SRAM mirror = COMM8:COMM10
+|     70  ops          Zelda 3 32X: COMM2 = words that follow (SH2 sets COMM14 = 0 first); then
+|                      packets of 4 words in COMM4-COMM10, each with COMM14 = 1, 2, 3...; the
+|                      68000 answers each in COMM2 = sequence | 0x8000.  Into the open queue.
+|     71  commit       Zelda 3 32X: the open queue is applied in the next V-blank (waits while the
+|                      last commit is not applied yet); COMM12 counts the applied ones
 | v18: FM MUSIC - the V-blank plays one frame of the music stream (tools/make_music.py, from
 |   a VGM) on the YM2612 / PSG; the Z80 is kept off the bus.  CD AUDIO - Chilly Willy's Mode 1
 |   code (from Vic's YATSSD, via the Sonic32XPlus1 cartridge): cart/cd.s.
@@ -44,15 +54,21 @@
         .equ    COMM2,      0xA15122
         .equ    COMM4,      0xA15124
         .equ    COMM8,      0xA15128
+        .equ    COMM6,      0xA15126
         .equ    COMM10,     0xA1512A
         .equ    COMM12,     0xA1512C
+        .equ    COMM14,     0xA1512E
         .equ    ticks,      0x00FF0000          | Genesis RAM: frame counter
         .equ    pad1,       0x00FF0002          | Genesis RAM: pad 1, active-high bits
-        .equ    ax,         0x00FF0004          | starfield positions, 1/16 pixel:
-        .equ    ay,         0x00FF0006          |   near layer (plane A) x, y
-        .equ    bx,         0x00FF0008          |   far layer (plane B) x, y
-        .equ    by,         0x00FF000A
-        .equ    seed,       0x00FF000C          | star placement random number
+        .equ    q_start,    0x00FF0030          | Zelda 3 32X: the open op queue: its start,
+        .equ    q_wr,       0x00FF0034          |   where the next word goes
+        .equ    rdy_ptr,    0x00FF0038          | the committed queue: start, end, and the flag
+        .equ    rdy_end,    0x00FF003C          |   (the V-blank applies it and clears the flag)
+        .equ    rdy_flag,   0x00FF0040
+        .equ    applied,    0x00FF0042          | commits applied (-> COMM12)
+        .equ    vq_a,       0x00FF4000          | the two op queues, 20 KB each
+        .equ    vq_b,       0x00FF9000
+        .equ    VQ_WORDS,   0x2800
         .equ    sram_ram,   0x00FF0100          | v17m: the SRAM routine runs from here (RAM, 512 bytes)
         .equ    save_buf,   0x00FF2000          | Zelda 3 32X: the 8 KB SRAM mirror (0xFF2000-0xFF3FFF)
         .equ    mus_mode,   0x00FF0010          | v18: 0 silent, 1 FM
@@ -104,19 +120,22 @@ main:
         lea     VDP_CTRL,a0
         move.w  #0x8004,(a0)
         move.w  #0x8134,(a0)                    | display off while we load, V-int on, mode 5
-        move.w  #0x8230,(a0)                    | plane A name table at 0xC000
-        move.w  #0x8407,(a0)                    | plane B name table at 0xE000
-        move.w  #0x857C,(a0)                    | sprite table at 0xF800 (unused, kept empty)
+        move.w  #0x8238,(a0)                    | plane A: the empty plane (0xE000) until the SH2's ops
+        move.w  #0x8334,(a0)                    | window at 0xD000 (off)
+        move.w  #0x8407,(a0)                    | plane B: the empty plane
+        move.w  #0x8562,(a0)                    | sprite table at 0xC400 (empty)
         move.w  #0x8B00,(a0)                    | full-screen H and V scroll
         move.w  #0x8C81,(a0)                    | H40
-        move.w  #0x8D3F,(a0)                    | H scroll table at 0xFC00
+        move.w  #0x8D30,(a0)                    | H scroll table at 0xC000
         move.w  #0x8F02,(a0)                    | auto-increment 2
-        move.w  #0x9001,(a0)                    | planes 64 x 32 cells
+        move.w  #0x9011,(a0)                    | planes 64 x 64 cells
         move.w  #0x9100,(a0)                    | no window
         move.w  #0x9200,(a0)
         move.w  #0x8700,(a0)                    | backdrop = colour 0
-        bsr     stars_init
+        bsr     md_video_init
         move.w  #0x8174,(a0)                    | display on, V-int on
+        move.l  #vq_a,q_start                   | the op queues
+        move.l  #vq_a,q_wr
 
         | ---- controller ports ----
         move.b  #0x40,0xA10009
@@ -213,6 +232,10 @@ loop:
         beq.w   c_blk_rd
         cmpi.b  #66,d1
         beq.w   c_blk_wr
+        cmpi.b  #70,d1
+        beq.w   c_ops
+        cmpi.b  #71,d1
+        beq.w   c_commit
         bra.w   done                            | 45, 54, 58, anything else: acknowledge
 
 c_pad:
@@ -233,6 +256,40 @@ c_zero12:
         bra.w   done
 c_zero8:
         move.w  #0,COMM8
+        bra.w   done
+c_ops:                                          | COMM2 words into the open queue, 4 a packet
+        move.w  COMM2,d6
+        movea.l q_wr,a1
+        moveq   #0,d7                           | the last packet's number
+1:      move.w  COMM14,d0
+        cmp.w   d7,d0
+        beq.b   1b
+        cmp.w   COMM14,d0                       | read twice
+        bne.b   1b
+        move.w  d0,d7
+        move.l  COMM4,(a1)+
+        move.l  COMM8,(a1)+
+        move.w  d7,d0
+        ori.w   #0x8000,d0
+        move.w  d0,COMM2                        | taken
+        subq.w  #4,d6
+        bgt.b   1b
+        add.w   d6,d6                           | the last packet held fewer: back over the extra
+        adda.w  d6,a1
+        move.l  a1,q_wr
+        bra.w   done
+c_commit:                                       | the open queue to the V-blank
+1:      tst.b   rdy_flag                        | the last one not applied yet: the V-blank will
+        bne.b   1b
+        move.l  q_start,rdy_ptr
+        move.l  q_wr,rdy_end
+        st      rdy_flag
+        move.l  #vq_a,d0                        | the other queue is open now
+        cmp.l   q_start,d0
+        bne.b   2f
+        move.l  #vq_b,d0
+2:      move.l  d0,q_start
+        move.l  d0,q_wr
         bra.w   done
 c_sram_rd:                                      | SRAM -> the mirror
         moveq   #0,d4
@@ -408,15 +465,37 @@ mus_tick:
         addq.l  #4,a1
         bra.b   2b
 
-pause:                                          | ~0.25 ms between COMM0 reads
-        move.w  #200,d3
+pause:                                          | ~0.05 ms between COMM0 reads (Zelda 3 32X: was 0.25 -
+        move.w  #40,d3                          |   every SH2 command waited for it)
 5:      dbra    d3,5b
         rts
 
 | ---- V-blank: read pad 1 (3/6-button, same routine as the CD version), count frames ---------
 vblank_handler:
-        movem.l d0-d2/a0-a1,-(sp)
-        tst.b   CD_Lvl2                         | v18: the Sega CD BIOS needs a level 2
+        movem.l d0-d2/a0-a3,-(sp)
+        tst.b   rdy_flag                        | Zelda 3 32X: the committed ops, first thing
+        beq.b   8f
+        movea.l rdy_ptr,a1
+        movea.l rdy_end,a3
+        lea     VDP_CTRL,a0
+        lea     VDP_DATA,a2
+3:      cmpa.l  a3,a1
+        bcc.b   7f
+        move.l  (a1)+,d0                        | the control long
+        move.w  (a1)+,d1                        | n words (0: d0's high word is a register)
+        bne.b   4f
+        swap    d0
+        move.w  d0,(a0)
+        bra.b   3b
+4:      move.l  d0,(a0)
+        subq.w  #1,d1
+5:      move.w  (a1)+,(a2)
+        dbra    d1,5b
+        bra.b   3b
+7:      clr.b   rdy_flag
+        addq.w  #1,applied
+        move.w  applied,COMM12                  | the SH2 swaps its frame buffer now
+8:      tst.b   CD_Lvl2                         | v18: the Sega CD BIOS needs a level 2
         beq.b   1f                              |      interrupt every frame
         ori.w   #0x0100,0xA12000
 1:      lea     0xA10003,a0
@@ -431,7 +510,7 @@ vblank_handler:
         bcs.b   2f
         clr.b   mus_pal5
         bsr     mus_tick
-2:      movem.l (sp)+,d0-d2/a0-a1
+2:      movem.l (sp)+,d0-d2/a0-a3
         rte
 
 read_pad:
@@ -471,52 +550,28 @@ get_input:
         move.b  (a0),d0
         rts
 
-| ---- starfield ------------------------------------------------------------------------------
-| colours: palette 0 = far (dim), palette 1 = near (bright).  Format 0000 BBB0 GGG0 RRR0.
-star_cram:
-        .word   0x0000, 0x0444, 0x0666, 0x0864, 0,0,0,0, 0,0,0,0, 0,0,0,0
-        .word   0x0000, 0x0AAA, 0x0EEE, 0x0EA8, 0,0,0,0, 0,0,0,0, 0,0,0,0
-| tiles 1-4 (4 bits per pixel, 8 rows of 4 bytes): a few single stars and one twinkle cross
-star_tiles:
-        .long   0x00000000,0x00000000,0x00000000,0x00010000,0x00000000,0x00000000,0x00000000,0x00000000
-        .long   0x00000000,0x00000000,0x00000200,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000
-        .long   0x00000000,0x00000000,0x00030000,0x00323000,0x00030000,0x00000000,0x00000000,0x00000000
-        .long   0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,0x02000000,0x00000000
-star_tiles_end:
-
-stars_init:                                     | a0 = VDP_CTRL
-        movem.l d0-d4/a1-a2,-(sp)
+| ---- Zelda 3 32X: the Genesis video RAM at start-up: all 0, then the empty plane's cells = the
+|      blank tile (0x640, at 0xC800); colours, vertical scroll 0 ------------------------------------
+md_video_init:                                  | a0 = VDP_CTRL
+        movem.l d0/a1,-(sp)
         lea     VDP_DATA,a1
-        move.l  #0xC0000000,(a0)                | CRAM 0: the two star palettes
-        lea     star_cram,a2
-        moveq   #31,d0
-1:      move.w  (a2)+,(a1)
-        dbra    d0,1b
-        move.l  #0x40000000,(a0)                | VRAM 0: tile 0 = empty, tiles 1-4 = stars
-        moveq   #7,d0
-2:      move.l  #0,(a1)
-        dbra    d0,2b
-        lea     star_tiles,a2
-        moveq   #31,d0
-3:      move.l  (a2)+,(a1)
-        dbra    d0,3b
-        move.l  #0x40000003,(a0)                | Zelda: planes A (0xC000) and B (0xE000) empty
-        bsr.b   clear_plane
-        move.l  #0x60000003,(a0)
-        bsr.b   clear_plane
-        move.l  #0x40000010,(a0)                | V scroll A, B = 0
-        move.l  #0,(a1)
-        move.l  #0x7C000003,(a0)                | H scroll A, B = 0
-        move.l  #0,(a1)
-        clr.l   ax
-        clr.l   bx
-        movem.l (sp)+,d0-d4/a1-a2
-        rts
-
-clear_plane:                                    | 64 x 32 cells of tile 0 (empty)
-        move.w  #64*32-1,d4
+        move.l  #0x40000000,(a0)                | VRAM 0..0xFFFF = 0
+        move.w  #0x7FFF,d0
 1:      move.w  #0,(a1)
-        dbra    d4,1b
+        dbra    d0,1b
+        move.l  #0x60000003,(a0)                | VRAM 0xE000: the empty plane
+        move.w  #0x0FFF,d0
+2:      move.w  #0x0640,(a1)
+        dbra    d0,2b
+        move.l  #0xC0000000,(a0)                | CRAM = 0
+        moveq   #63,d0
+3:      move.w  #0,(a1)
+        dbra    d0,3b
+        move.l  #0x40000010,(a0)                | VSRAM = 0
+        moveq   #39,d0
+4:      move.w  #0,(a1)
+        dbra    d0,4b
+        movem.l (sp)+,d0/a1
         rts
 
 | ---- SRAM (header "RA", 8 KB on odd bytes at 0x200001) -----------------------------------------

@@ -942,7 +942,7 @@ static void CopyTilesForSwitchLR(int switch_lr) {
       PV(1,1,1,3,3,1,1,1),
       PV(1,1,1,1,1,1,1,3)
     };
-    CopyWordsToLe(&g_zenv.vram[0x7000 + 0xc * 8], kBytesForNewTile0xC_TopOfR, countof(kBytesForNewTile0xC_TopOfR));
+    CopyWordsToLe(VramW(0x7000 + 0xc * 8, countof(kBytesForNewTile0xC_TopOfR)), kBytesForNewTile0xC_TopOfR, countof(kBytesForNewTile0xC_TopOfR));
 
     static const uint16 kBytesForNewTile0xD_BottomofR[8] = {
       PV(1,1,1,1,1,1,3,3),
@@ -954,7 +954,7 @@ static void CopyTilesForSwitchLR(int switch_lr) {
       PV(1,1,1,3,3,1,1,1),
       PV(1,1,1,3,3,1,1,1)
     };
-    CopyWordsToLe(&g_zenv.vram[0x7000 + 0xd * 8], kBytesForNewTile0xD_BottomofR, countof(kBytesForNewTile0xD_BottomofR));
+    CopyWordsToLe(VramW(0x7000 + 0xd * 8, countof(kBytesForNewTile0xD_BottomofR)), kBytesForNewTile0xD_BottomofR, countof(kBytesForNewTile0xD_BottomofR));
   } else if (switch_lr == 2) {
     static const uint16 kBytesForNewTile0xE_TopOfL[8] = {
       PV(1,1,1,3,3,3,3,3),
@@ -966,7 +966,7 @@ static void CopyTilesForSwitchLR(int switch_lr) {
       PV(1,1,1,3,3,3,3,3),
       PV(1,1,1,3,3,3,3,3)
     };
-    CopyWordsToLe(&g_zenv.vram[0x7000 + 0xe * 8], kBytesForNewTile0xE_TopOfL, countof(kBytesForNewTile0xE_TopOfL));
+    CopyWordsToLe(VramW(0x7000 + 0xe * 8, countof(kBytesForNewTile0xE_TopOfL)), kBytesForNewTile0xE_TopOfL, countof(kBytesForNewTile0xE_TopOfL));
 
     static const uint16 kBytesForNewTile0xF_BottomofL[8] = {
       PV(1,1,1,3,3,3,3,3),
@@ -978,7 +978,7 @@ static void CopyTilesForSwitchLR(int switch_lr) {
       PV(1,1,1,1,1,1,1,1),
       PV(1,1,1,1,1,1,1,1)
     };
-    CopyWordsToLe(&g_zenv.vram[0x7000 + 0xf * 8], kBytesForNewTile0xF_BottomofL, countof(kBytesForNewTile0xF_BottomofL));
+    CopyWordsToLe(VramW(0x7000 + 0xf * 8, countof(kBytesForNewTile0xF_BottomofL)), kBytesForNewTile0xF_BottomofL, countof(kBytesForNewTile0xF_BottomofL));
   }
 #undef PV
 }

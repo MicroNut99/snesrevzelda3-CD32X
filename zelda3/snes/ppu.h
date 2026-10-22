@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include "snes/saveload.h"
 typedef struct Ppu Ppu;
+struct MdHybrid;
 
 #include "src/types.h"
 
@@ -61,6 +62,11 @@ enum {
   kPpuRenderFlags_Rgb15 = 32,
   // Z32X test: never the painted mode-1 line (the depth-buffer path is the reference)
   kPpuRenderFlags_NoPaint = 64,
+  // Z32X "rip and tear" (md_planes.h): BG1 / BG2 are on the Genesis planes; the 8-bit line holds
+  // the sprites and BG3 only, as indices into the 32X palette MdPlanes_Palette32x makes (0: see
+  // through to the Genesis, its through bit set; 33-63 BG3 low, 64-127 sprites 0 / 1: behind
+  // the planes; sprites 2 over a high BG1 / BG2 pixel: 0)
+  kPpuRenderFlags_Hybrid = 128,
 };
 
 
@@ -145,8 +151,14 @@ struct Ppu {
   // screen's layer per pixel (colour-math lines only), [512..767] the subscreen's indices
   uint32_t lineBuf[64 * 3];
   PpuPaintList paintHi[3];              // Z32X: BG1..3's high-priority tiles of the line
+  // Z32X Hybrid: the frame's split (md_planes.h), and set by a line the Genesis cannot show as drawn
+  const struct MdHybrid *hybrid;
+  uint8 hybridFail;
+  uint32 hybridKey[6];                  // PpuHybridCheck: the registers of the last line checked
+  uint8 regsChanged;                    // Z32X: a register was written (ppu_write) since the last look
   uint8_t objList[128];
   uint8_t objHigh[128];
+  uint8 objLines[32];                   // Z32X: the lines (0-255) a sprite of objList is on (bits)
   
   // store 31 extra entries to remove the need for clamp
   uint8_t brightnessMult[32 + 31];
@@ -157,7 +169,9 @@ struct Ppu {
   uint16_t palette15[256];
   uint16_t cgram[0x100];
   uint8_t mosaicModulo[kPpuXPixels];
+#ifndef Z32X                            // (the 4x mode-7 picture only: not on the 32X - 1 KB of SDRAM)
   uint32_t colorMapRgb[256];
+#endif
   PpuPixelPrioBufs bgBuffers[2];
   PpuPixelPrioBufs objBuffer;
   // Z32X: the VRAM is shared by the frame's drawing contexts (a copy of this struct per SH2,
@@ -178,6 +192,7 @@ uint8_t ppu_read(Ppu* ppu, uint8_t adr);
 void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val);
 void ppu_saveload(Ppu *ppu, SaveLoadFunc *func, void *ctx);
 void PpuBeginDrawing(Ppu *ppu, uint8_t *buffer, size_t pitch, uint32_t render_flags);
+void PpuHybridSpansFull(int fb);        // Z32X: frame buffer fb holds another picture (md_planes.h)
 
 // Returns the current render scale, 1x = 256px, 2x=512px, 4x=1024px
 int PpuGetCurrentRenderScale(Ppu *ppu, uint32_t render_flags);

@@ -48,18 +48,18 @@ void NMI_UploadSubscreenOverlayLatter() {
 }
 
 static void CopyToVram(uint32 dstv, const uint8 *src, int len) {
-  memcpy(&g_zenv.vram[dstv], src, len);
+  memcpy(VramW(dstv, (len) >> 1), src, len);
 }
 
 static void CopyToVramVertical(uint32 dstv, const uint8 *src, int len) {
   assert(!(len & 1));
-  le16 *dst = &g_zenv.vram[dstv];
+  le16 *dst = VramW(dstv, (len >> 1) * 32);
   for (int i = 0, i_end = len >> 1; i < i_end; i++, dst += 32, src += 2)
     *dst = LE16(&(*src));
 }
 
 static void CopyToVramLow(const uint8 *src, uint32 addr, int num) {
-  le16 *dst = &g_zenv.vram[addr];
+  le16 *dst = VramW(addr, num);
   for (int i = 0; i < num; i++)
     dst[i] = (dst[i] & ~0xff) | src[i];
 }
@@ -171,41 +171,41 @@ void NMI_ReadJoypads(uint16 joypad_input) {  // 8083d1
 
 void NMI_DoUpdates() {  // 8089e0
   if (!nmi_disable_core_updates) {
-    memcpy(&g_zenv.vram[0x4100], &kLinkGraphics[dma_source_addr_0 - 0x8000], 0x40);
-    memcpy(&g_zenv.vram[0x4120], &kLinkGraphics[dma_source_addr_1 - 0x8000], 0x40);
-    memcpy(&g_zenv.vram[0x4140], &kLinkGraphics[dma_source_addr_2 - 0x8000], 0x20);
+    memcpy(VramW(0x4100, (0x40) >> 1), &kLinkGraphics[dma_source_addr_0 - 0x8000], 0x40);
+    memcpy(VramW(0x4120, (0x40) >> 1), &kLinkGraphics[dma_source_addr_1 - 0x8000], 0x40);
+    memcpy(VramW(0x4140, (0x20) >> 1), &kLinkGraphics[dma_source_addr_2 - 0x8000], 0x20);
 
-    memcpy(&g_zenv.vram[0x4000], &kLinkGraphics[dma_source_addr_3 - 0x8000], 0x40);
-    memcpy(&g_zenv.vram[0x4020], &kLinkGraphics[dma_source_addr_4 - 0x8000], 0x40);
-    memcpy(&g_zenv.vram[0x4040], &kLinkGraphics[dma_source_addr_5 - 0x8000], 0x20);
+    memcpy(VramW(0x4000, (0x40) >> 1), &kLinkGraphics[dma_source_addr_3 - 0x8000], 0x40);
+    memcpy(VramW(0x4020, (0x40) >> 1), &kLinkGraphics[dma_source_addr_4 - 0x8000], 0x40);
+    memcpy(VramW(0x4040, (0x20) >> 1), &kLinkGraphics[dma_source_addr_5 - 0x8000], 0x20);
 
-    memcpy(&g_zenv.vram[0x4050], &g_ram[dma_source_addr_6], 0x40);
-    memcpy(&g_zenv.vram[0x4070], &g_ram[dma_source_addr_7], 0x40);
-    memcpy(&g_zenv.vram[0x4090], &g_ram[dma_source_addr_8], 0x40);
-    memcpy(&g_zenv.vram[0x40b0], &g_ram[dma_source_addr_9], 0x20);
-    memcpy(&g_zenv.vram[0x40c0], &g_ram[dma_source_addr_10], 0x40);
-    memcpy(&g_zenv.vram[0x4150], &g_ram[dma_source_addr_11], 0x40);
-    memcpy(&g_zenv.vram[0x4170], &g_ram[dma_source_addr_12], 0x40);
-    memcpy(&g_zenv.vram[0x4190], &g_ram[dma_source_addr_13], 0x40);
-    memcpy(&g_zenv.vram[0x41b0], &g_ram[dma_source_addr_14], 0x20);
-    memcpy(&g_zenv.vram[0x41c0], &g_ram[dma_source_addr_15], 0x40);
-    memcpy(&g_zenv.vram[0x4200], &g_ram[dma_source_addr_16], 0x40);
-    memcpy(&g_zenv.vram[0x4220], &g_ram[dma_source_addr_17], 0x40);
-    memcpy(&g_zenv.vram[0x4240], &g_ram[0xbd40], 0x40);
-    memcpy(&g_zenv.vram[0x4300], &g_ram[dma_source_addr_18], 0x40);
-    memcpy(&g_zenv.vram[0x4320], &g_ram[dma_source_addr_19], 0x40);
-    memcpy(&g_zenv.vram[0x4340], &g_ram[0xbd80], 0x40);
+    memcpy(VramW(0x4050, (0x40) >> 1), &g_ram[dma_source_addr_6], 0x40);
+    memcpy(VramW(0x4070, (0x40) >> 1), &g_ram[dma_source_addr_7], 0x40);
+    memcpy(VramW(0x4090, (0x40) >> 1), &g_ram[dma_source_addr_8], 0x40);
+    memcpy(VramW(0x40b0, (0x20) >> 1), &g_ram[dma_source_addr_9], 0x20);
+    memcpy(VramW(0x40c0, (0x40) >> 1), &g_ram[dma_source_addr_10], 0x40);
+    memcpy(VramW(0x4150, (0x40) >> 1), &g_ram[dma_source_addr_11], 0x40);
+    memcpy(VramW(0x4170, (0x40) >> 1), &g_ram[dma_source_addr_12], 0x40);
+    memcpy(VramW(0x4190, (0x40) >> 1), &g_ram[dma_source_addr_13], 0x40);
+    memcpy(VramW(0x41b0, (0x20) >> 1), &g_ram[dma_source_addr_14], 0x20);
+    memcpy(VramW(0x41c0, (0x40) >> 1), &g_ram[dma_source_addr_15], 0x40);
+    memcpy(VramW(0x4200, (0x40) >> 1), &g_ram[dma_source_addr_16], 0x40);
+    memcpy(VramW(0x4220, (0x40) >> 1), &g_ram[dma_source_addr_17], 0x40);
+    memcpy(VramW(0x4240, (0x40) >> 1), &g_ram[0xbd40], 0x40);
+    memcpy(VramW(0x4300, (0x40) >> 1), &g_ram[dma_source_addr_18], 0x40);
+    memcpy(VramW(0x4320, (0x40) >> 1), &g_ram[dma_source_addr_19], 0x40);
+    memcpy(VramW(0x4340, (0x40) >> 1), &g_ram[0xbd80], 0x40);
 
     if ((*(uint8*)(g_ram+0xAF4))) {
-      memcpy(&g_zenv.vram[0x40e0], &g_ram[dma_source_addr_20], 0x40);
-      memcpy(&g_zenv.vram[0x41e0], &g_ram[dma_source_addr_21], 0x40);
+      memcpy(VramW(0x40e0, (0x40) >> 1), &g_ram[dma_source_addr_20], 0x40);
+      memcpy(VramW(0x41e0, (0x40) >> 1), &g_ram[dma_source_addr_21], 0x40);
     }
 
-    memcpy(&g_zenv.vram[animated_tile_vram_addr], &g_ram[animated_tile_data_src], 0x400);
+    memcpy(VramW(animated_tile_vram_addr, (0x400) >> 1), &g_ram[animated_tile_data_src], 0x400);
   }
 
   if (flag_update_hud_in_nmi) {
-    memcpy(&g_zenv.vram[word_7E0219], hud_tile_indices_buffer, 165 * sizeof(uint16));
+    memcpy(VramW(word_7E0219, (165 * sizeof(uint16)) >> 1), hud_tile_indices_buffer, 165 * sizeof(uint16));
   }
 
   if (flag_update_cgram_in_nmi) {
@@ -238,7 +238,7 @@ void NMI_DoUpdates() {  // 8089e0
   }
 
   if (nmi_update_tilemap_dst) {
-    memcpy(&g_zenv.vram[nmi_update_tilemap_dst * 256], &g_ram[0x10000 + nmi_update_tilemap_src], 0x200);
+    memcpy(VramW(nmi_update_tilemap_dst * 256, (0x200) >> 1), &g_ram[0x10000 + nmi_update_tilemap_src], 0x200);
     nmi_update_tilemap_dst = 0;
   }
 
@@ -251,11 +251,11 @@ void NMI_DoUpdates() {  // 8089e0
       p += 4;
       if (vmain == 0x80) {
         // plain copy
-        memcpy(&g_zenv.vram[dst], p, len);
+        memcpy(VramW(dst, (len) >> 1), p, len);
       } else if (vmain == 0x81) {
         // copy with other increment
         assert((len & 1) == 0);
-        le16 *dp = &g_zenv.vram[dst];
+        le16 *dp = VramW(dst, (len >> 1) * 32);
         for (int i = 0; i < len; i += 2, dp += 32)
           *dp = LE16(&(p[i]));
       } else {
@@ -273,7 +273,7 @@ void NMI_DoUpdates() {  // 8089e0
 }
 
 void NMI_UploadTilemap() {  // 808cb0
-  memcpy(&g_zenv.vram[kNmiVramAddrs[(*(uint8*)(g_ram+0x116))] << 8], &g_ram[0x1000], 0x800);
+  memcpy(VramW(kNmiVramAddrs[(*(uint8*)(g_ram+0x116))] << 8, (0x800) >> 1), &g_ram[0x1000], 0x800);
 
   *(le16 *)&g_ram[0x1000] = 0;
   nmi_disable_core_updates = 0;
@@ -283,7 +283,7 @@ void NMI_UploadTilemap_doNothing() {  // 808ce3
 }
 
 void NMI_UploadBG3Text() {  // 808ce4
-  memcpy(&g_zenv.vram[0x7c00], &g_ram[0x10000], 0x7e0);
+  memcpy(VramW(0x7c00, (0x7e0) >> 1), &g_ram[0x10000], 0x7e0);
   nmi_disable_core_updates = 0;
 }
 
@@ -294,7 +294,7 @@ void NMI_UpdateOWScroll() {  // 808d13
   int len = f & 0x3fff;
   src += 2;
   do {
-    le16 *dst = &g_zenv.vram[LE16(&(src[0]))];
+    le16 *dst = VramW(LE16(&(src[0])), (len >> 1) * step);
     src += 2;
     for (int i = 0, i_end = len >> 1; i < i_end; i++, dst += step, src += 2)
       *dst = LE16(&(*src));
@@ -309,7 +309,7 @@ void NMI_UpdateSubscreenOverlay() {  // 808d62
 void NMI_HandleArbitraryTileMap(const uint8 *src, int i, int i_end) {  // 808dae
   le16 *r10 = &word_7F4000;
   do {
-    memcpy(&g_zenv.vram[r10[i >> 1]], src, 0x80);
+    memcpy(VramW(r10[i >> 1], (0x80) >> 1), src, 0x80);
     src += 0x80;
   } while ((i += 2) != i_end);
   nmi_disable_core_updates = 0;
@@ -343,17 +343,17 @@ void NMI_UpdateBG2Left() {  // 808ea9
 }
 
 void NMI_UpdateBGChar3and4() {  // 808ee7
-  memcpy(&g_zenv.vram[0x2c00], &g_ram[0x10000], 0x1000);
+  memcpy(VramW(0x2c00, (0x1000) >> 1), &g_ram[0x10000], 0x1000);
   nmi_disable_core_updates = 0;
 }
 
 void NMI_UpdateBGChar5and6() {  // 808f16
-  memcpy(&g_zenv.vram[0x3400], &g_ram[0x11000], 0x1000);
+  memcpy(VramW(0x3400, (0x1000) >> 1), &g_ram[0x11000], 0x1000);
   nmi_disable_core_updates = 0;
 }
 
 void NMI_UpdateBGCharHalf() {  // 808f45
-  memcpy(&g_zenv.vram[(*(uint8*)(g_ram+0x116)) * 256], &g_ram[0x11000], 0x400);
+  memcpy(VramW((*(uint8*)(g_ram+0x116)) * 256, (0x400) >> 1), &g_ram[0x11000], 0x400);
 }
 
 void NMI_UpdateBGChar0() {  // 808f72
@@ -422,7 +422,7 @@ void HandleStripes14(const uint8 *p) {  // 8092a1
     p += 4;
 
     if (vram_incr_amount == 0) {
-      le16 *dst = &g_zenv.vram[vmem_addr];
+      le16 *dst = VramW(vmem_addr, (len + 1) >> 1);
       if (is_memset) {
         uint16 v = p[0] | p[1] << 8;
         len = (len + 1) >> 1;
@@ -435,7 +435,7 @@ void HandleStripes14(const uint8 *p) {  // 8092a1
       }
     } else {
       // increment vram by 32 instead of 1
-      le16 *dst = &g_zenv.vram[vmem_addr];
+      le16 *dst = VramW(vmem_addr, ((len + 1) >> 1) * 32);
       if (is_memset) {
         uint16 v = p[0] | p[1] << 8;
         len = (len + 1) >> 1;
@@ -454,7 +454,7 @@ void HandleStripes14(const uint8 *p) {  // 8092a1
 
 void NMI_UpdateIRQGFX() {  // 809347
   if (nmi_flag_update_polyhedral) {
-    memcpy(&g_zenv.vram[0x5800], &g_ram[0xe800], 0x800);
+    memcpy(VramW(0x5800, (0x800) >> 1), &g_ram[0xe800], 0x800);
     nmi_flag_update_polyhedral = 0;
   }
 }

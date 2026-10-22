@@ -64,7 +64,21 @@ void dma_reset(Dma* dma) {
 }
 
 void dma_saveload(Dma *dma, SaveLoadFunc *func, void *ctx) {
+#ifdef Z32X  // a PC snapshot (replays from one: the 32X's tests): the PC's layout, little-endian
+  uint8 b[192];
+  func(ctx, b, 192);
+  for (int c = 0; c < 8; c++) {
+    const uint8 *p = b + c * 22;
+    DmaChannel *ch = &dma->channel[c];
+    memcpy(ch, p, 22);
+    ch->aAdr = (uint16_t)(p[4] | p[5] << 8), ch->size = (uint16_t)(p[6] | p[7] << 8), ch->tableAdr = (uint16_t)(p[8] | p[9] << 8);
+  }
+  dma->hdmaTimer = (uint16_t)(b[176] | b[177] << 8);
+  dma->dmaTimer = (uint32_t)(b[180] | b[181] << 8 | b[182] << 16 | b[183] << 24);
+  dma->dmaBusy = b[184];
+#else
   func(ctx, &dma->channel, sizeof(Dma) - offsetof(Dma, channel));
+#endif
 }
 
 uint8_t dma_read(Dma* dma, uint16_t adr) {

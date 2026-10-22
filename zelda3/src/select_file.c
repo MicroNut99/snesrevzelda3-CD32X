@@ -172,7 +172,7 @@ void LoadFileSelectGraphics() {  // 80e4e9
   TransferFontToVRAM();
 
   Decomp_spr(&g_ram[0x14000], 0x6b);
-  memcpy(&g_zenv.vram[0x7800], &g_ram[0x14000], 0x300 * sizeof(uint16));
+  memcpy(VramW(0x7800, (0x300 * sizeof(uint16)) >> 1), &g_ram[0x14000], 0x300 * sizeof(uint16));
 }
 
 void Intro_ValidateSram() {  // 828054

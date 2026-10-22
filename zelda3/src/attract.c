@@ -1020,7 +1020,7 @@ void Attract_BuildBackgrounds() {  // 8cf7e6
 }
 
 void Attract_TriggerBGDMA(uint16 dstv) {  // 8cf879
-  le16 *dst = &g_zenv.vram[dstv];
+  le16 *dst = VramW(dstv, 8 * 0x80);
   for (int i = 0; i < 8; i++) {
     memcpy(dst, &g_ram[0x1006], 0x100);
     dst += 0x80;

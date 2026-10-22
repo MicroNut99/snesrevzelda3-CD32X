@@ -412,6 +412,7 @@ void EraseTileMaps_normal() {
 static void DecompAndUpload2bpp(le16 *vram_ptr, uint8 pack) {
   Decomp_spr(&g_ram[0x14000], pack);
   const uint8 *src = &g_ram[0x14000];
+  ZeldaVramDirty((uint32)(vram_ptr - g_zenv.vram), 1024);
   memcpy(vram_ptr, src, 1024 * sizeof(uint16));
 }
 
@@ -435,11 +436,11 @@ void EraseTileMaps_dungeonmap() {  // 80833f
 }
 
 void EraseTileMaps(uint16 r2, uint16 r0) {  // 808355
-  le16 *dst = g_zenv.vram;
+  le16 *dst = VramW(0, 0x2000);
   for (int i = 0; i < 0x2000; i++)
     dst[i] = r0;
 
-  dst = g_zenv.vram + 0x6000;
+  dst = VramW(0x6000, 0x800);
   for (int i = 0; i < 0x800; i++)
     dst[i] = r2;
 }
@@ -846,7 +847,7 @@ void InitializeTilesets() {  // 80e19b
 void LoadDefaultGraphics() {  // 80e2d0
   const uint8 *src = GetCompSpritePtr(0);
 
-  le16 *vram_ptr = &g_zenv.vram[0x4000];
+  le16 *vram_ptr = VramW(0x4000, 64 * 16);
   le16 *tmp = (le16 *)&g_ram[0xbf];
   int num = 64;
   do {
@@ -932,10 +933,11 @@ void Graphics_LoadChrHalfSlot() {  // 80e3fa
 }
 
 void TransferFontToVRAM() {  // 80e556
-  memcpy(&g_zenv.vram[0x7000], FindIndexInMemblk(kDialogueFont(0), 0).ptr, 0x800 * sizeof(uint16));
+  memcpy(VramW(0x7000, (0x800 * sizeof(uint16)) >> 1), FindIndexInMemblk(kDialogueFont(0), 0).ptr, 0x800 * sizeof(uint16));
 }
 
 void Do3To4High(le16 *vram_ptr, const uint8 *decomp_addr) {  // 80e5af
+  ZeldaVramDirty((uint32)(vram_ptr - g_zenv.vram), 64 * 16);
   for (int j = 0; j < 64; j++) {
     le16 *t = (le16 *)&dung_line_ptrs_row0;
     for (int i = 7; i >= 0; i--, decomp_addr += 2) {
@@ -951,6 +953,7 @@ void Do3To4High(le16 *vram_ptr, const uint8 *decomp_addr) {  // 80e5af
 }
 
 void Do3To4Low(le16 *vram_ptr, const uint8 *decomp_addr) {  // 80e63c
+  ZeldaVramDirty((uint32)(vram_ptr - g_zenv.vram), 64 * 16);
   for (int j = 0; j < 64; j++) {
     for (int i = 0; i < 8; i++, decomp_addr += 2)
       *vram_ptr++ = *(le16 *)decomp_addr;

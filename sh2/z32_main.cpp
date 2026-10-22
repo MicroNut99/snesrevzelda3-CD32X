@@ -14,6 +14,7 @@
 #include "../zelda3/src/assets.h"
 #include "../zelda3/src/variables.h"
 #include "../zelda3/snes/ppu.h"
+#include "../zelda3/snes/md_planes.h"
 #include "z32_sound.h"
 
 #define REG16(a) (*(volatile uint16_t *)(a))
@@ -24,6 +25,9 @@
 #define FB16         ((volatile uint16_t *)0x24000000)
 #define FB8          ((uint8_t *)0x24000200)
 #define COMM0        REG16(0x20004020)
+#define COMM2        REG16(0x20004022)
+#define COMM4L       (*(volatile uint32_t *)0x20004024)
+#define COMM8L       (*(volatile uint32_t *)0x20004028)
 #define COMM8        REG16(0x20004028)
 #define COMM10       REG16(0x2000402A)
 #define COMM12       REG16(0x2000402C)
@@ -71,6 +75,10 @@ struct Z32Stats {
   uint32 drawn, skipped;                     /* frames drawn; game frames run without a picture */
   uint32 direct, relayouts;                  /* frames drawn in direct colour; layout changes */
   uint32 direct_draw_sum;                    /* FRT ticks drawing the direct colour frames */
+  uint32 hybrid, hybrid_fail;                /* frames shown with the Genesis planes; redrawn: a line failed */
+  uint32 why[kMdWhy_Count];                  /* why the others were not (md_planes.h) */
+  uint32 ops_words, ops_ticks;               /* words of ops sent to the 68000, FRT ticks it took */
+  uint32 md_ticks, begin_ticks;              /* FRT ticks: MdPlanes_Prepare; FrameBegin + the copy */
 };
 extern "C" { Z32Stats z32_stats; extern char *z32_heap_peak; }
 
@@ -147,7 +155,12 @@ static void load_assets(void) {
   }
 }
 
-/* The picture in the frame buffer, in one of two layouts, chosen per frame:
+/* The picture in the frame buffer, in one of three layouts, chosen per frame:
+ * Genesis planes ("rip and tear", zelda3/snes/md_planes.h): 8 bits, the 32X's own palette
+ *   (MdPlanes_Palette32x) - only the sprites and BG3 are drawn, BG1 / BG2 are the Genesis's
+ *   planes, seen through index 0; the side borders are index 32 (black, in front).
+ * The 32X's priority bit (DISPMODE bit 7) is set in every layout: a pixel is in front of the
+ *   Genesis's unless its colour has the through bit (only the Genesis-planes palette has any).
  * direct colour (DISPMODE 2; 15 bits a pixel: the SNES colour math, the colour window's clip,
  *   the brightness) for the frames that need it (PpuNeedsDirectColour): a 32X line is 320 pixels
  *   = 640 bytes, 224 of them would not fit in the 128 KB, so the lines overlap: line y starts at
@@ -158,9 +171,10 @@ static void load_assets(void) {
  *   picture 32 bytes in.
  * Z32_INDEX8 / Z32_DIRECT: one layout for every frame (tests). */
 struct Z32Layout { uint8 dispmode; uint16 step, offset; uint32 flags; };
-static const Z32Layout kLayouts[2] = {
-  { 1, 320, 32, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8 },
-  { 2, 576, 64, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Rgb15 },
+static const Z32Layout kLayouts[3] = {
+  { 0x81, 320, 32, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8 },
+  { 0x82, 576, 64, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Rgb15 },
+  { 0x81, 320, 32, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Hybrid },
 };
 static int8 z32_fb_layout[2] = { -1, -1 };       /* per frame buffer (FBCTL bit 0 when it is drawn) */
 static uint8 z32_shown_layout, z32_drawn_layout;
@@ -173,15 +187,16 @@ static void layout_frame_buffer(int l) {         /* the line table and black bor
     for (int y = 0; y <= 224; y++)               /* 64 bytes at each line start = every border */
       for (int k = 0; k < 16; k++) p[(y * 576) / 4 + k] = 0;
   } else {
+    uint32 b = l == 2 ? 0x20202020 : 0;          /* Genesis planes: index 32, black in front */
     for (int y = 0; y < 224; y++) {
-      for (int k = 0; k < 8; k++) p[(y * 320) / 4 + k] = 0;
-      for (int k = 0; k < 8; k++) p[(y * 320 + 288) / 4 + k] = 0;
+      for (int k = 0; k < 8; k++) p[(y * 320) / 4 + k] = b;
+      for (int k = 0; k < 8; k++) p[(y * 320 + 288) / 4 + k] = b;
     }
   }
 }
 
 static void video_init(void) {
-  VDP_DISPMODE = 1;                              /* PRI clear: the 32X in front */
+  VDP_DISPMODE = 0x81;                           /* PRI: the 32X in front of the Genesis */
   for (int fb = 0; fb < 2; fb++) {
     volatile uint32 *p = (uint32 *)FB8;          /* words: the FB drops byte writes of 0 */
     for (int i = 0; i < (0x20000 - 0x200) / 4; i++) p[i] = 0;
@@ -192,23 +207,33 @@ static void video_init(void) {
   }
 }
 
-static uint16 z32_palette[256];                  /* the CGRAM of the picture last drawn */
-static uint8 z32_bright = 15;                    /* and its brightness (INIDISP 0..15) */
-static void snapshot_palette(void) {
-  memcpy(z32_palette, g_zenv.ppu->cgram, sizeof z32_palette);
-  z32_bright = g_zenv.ppu->brightness;
-}
-static void palette_from_cgram(void) {
-  const uint16_t *cg = z32_palette;
+static uint16 z32_palette[256];                  /* the 32X colours of the picture last drawn */
+static MdHybrid z32_hybrid;                      /* its split (Genesis planes frames) */
+static void snapshot_palette(int layout) {
+  const uint16 *cg = g_zenv.ppu->cgram;
+  uint8 b = g_zenv.ppu->brightness;
+  if (layout == 2) {
+    MdPlanes_Palette32x(&z32_hybrid, cg, b, z32_palette);
+    return;
+  }
   uint8 m[32];                                   /* the SNES brightness: each 5-bit level * b / 15 */
-  for (int i = 0; i < 32; i++) m[i] = (uint8)(i * z32_bright / 15);
+  for (int i = 0; i < 32; i++) m[i] = (uint8)(i * b / 15);
   for (int i = 0; i < 256; i++) {
     uint16_t c = cg[i] & 0x7FFF;                 /* SNES BGR555 = 32X BGR555 */
-    if (z32_bright != 15)
+    if (b != 15)
       c = (uint16_t)(m[c & 31] | m[c >> 5 & 31] << 5 | m[c >> 10] << 10);
-    while (!(VDP_FBCTL & 0x2000)) { }            /* PEN: writable only in the blanking (Rev32XCD cram_put) */
-    CRAM[i] = c ? c : 0x0400;                    /* black as 1/31 blue: 0x0000 let the MD layer show (first tests) */
+    z32_palette[i] = c ? c : 0x0400;             /* black as 1/31 blue: 0x0000 let the MD layer show (first tests) */
   }
+}
+static uint16 z32_cram[256];                     /* what the 32X's CRAM holds */
+static bool z32_cram_valid;
+static void palette_from_cgram(void) {           /* only the colours that changed */
+  for (int i = 0; i < 256; i++) {
+    if (z32_cram_valid && z32_cram[i] == z32_palette[i]) continue;
+    while (!(VDP_FBCTL & 0x2000)) { }            /* PEN: writable only in the blanking (Rev32XCD cram_put) */
+    CRAM[i] = z32_cram[i] = z32_palette[i];
+  }
+  z32_cram_valid = true;
 }
 
 static void flip(void) {
@@ -273,9 +298,45 @@ static void check_picture(uint32 f) {
 #endif
 }
 
-/* the picture: two SH2s, master lines 0..split-1, slave split..; the split balanced each frame */
-static void draw_frame(void) {
+/* ---- the Genesis planes ("rip and tear", zelda3/snes/md_planes.h) ----
+ * Once per drawn frame MdPlanes_Prepare splits the frame; MdPlanes_Send (while the slave draws)
+ * sends the 68000 what changed in BG1 / BG2 (command 70, a
+ * packet of 4 words at a time through COMM4-COMM10, COMM14 its number, COMM2 the 68000's answer);
+ * after drawing, the planes to show; at the swap, command 71 commits it all: the 68000 applies
+ * it in the next V-blank and counts it in COMM12, and the master swaps the 32X's frame buffer
+ * right then - the same V-blank, so both halves of the picture change together.
+ * Z32_NO_MD (and the test build, whose checks compare whole 8-bit pictures): never. */
+#if !defined(Z32_NO_MD) && defined(Z32_NO_CHECK) && !defined(Z32_INDEX8) && !defined(Z32_DIRECT)
+#define Z32_MD 1
+#endif
+static MdPlanes z32_md;
+static uint16 z32_ops_t;
+static void md_flush(MdSink *k) {
+  uint16 t0 = frt();
+  int n = k->n;
+  COMM14 = 0;
+  COMM2 = (uint16)n;
+  COMM0 = 70;
+  const uint16 *w = k->buf;
+  for (int i = 0, seq = 1; i < n; i += 4, seq++) {
+    uint16 a = w[i], b = i + 1 < n ? w[i + 1] : 0, c = i + 2 < n ? w[i + 2] : 0, d = i + 3 < n ? w[i + 3] : 0;
+    COMM4L = (uint32)a << 16 | b;
+    COMM8L = (uint32)c << 16 | d;
+    COMM14 = (uint16)seq;
+    while (COMM2 != (uint16)(seq | 0x8000)) { }
+  }
+  while (COMM0 != 0) { }
+  z32_stats.ops_words += n;
+  z32_ops_t += (uint16)(frt() - t0);
+}
+static MdSink z32_sink = { {0}, 0, 0, md_flush };
+
+/* the picture: two SH2s, master lines 0..split-1, slave split..; the split balanced each frame.
+ * false: a line of a Genesis-planes frame could not be shown so (MdHybrid) - nothing to swap,
+ * the next frame is drawn whole */
+static bool draw_frame(void) {
   static uint32 seq, split = 112;
+  static bool md_off;                            /* the last frame's lines failed: whole */
   ZeldaDrawCtx ctx;
 #if defined(Z32_INDEX8)
   int l = 0;
@@ -284,26 +345,63 @@ static void draw_frame(void) {
 #else
   int l = PpuNeedsDirectColour(g_zenv.ppu) ? 1 : 0;
 #endif
+#ifdef Z32_MD
+  z32_ops_t = 0;
+  uint16 tm0 = frt();
+  MdPlanes_Prepare(&z32_md, g_zenv.ppu, &z32_hybrid, kMd_CommitMax - z32_sink.total);
+  z32_stats.md_ticks += (uint16)(frt() - tm0);
+  if (!z32_hybrid.why && !md_off) l = 2;
+  else z32_stats.why[md_off ? kMdWhy_LineCheck : z32_hybrid.why]++;
+  md_off = false;
+  g_zenv.ppu->hybrid = &z32_hybrid;
+  g_zenv.ppu->hybridFail = 0;
+  g_zenv.ppu->hybridKey[5] = 0;                  /* no line checked yet */
+  g_zenv.ppu->regsChanged = 3;                   /* every line checked from the first */
+  for (int i = 0; i < 64; i++) g_zenv.ppu->lineBuf[i] = 0;   /* the painter keeps it 0 between lines */
+#endif
   int fb = VDP_FBCTL & 1;
+  z32_hybrid.fb = (uint8)(fb ^ 1);               /* drawn into the buffer not shown */
   if (z32_fb_layout[fb] != l) {                  /* this frame buffer held the other layout */
     layout_frame_buffer(l);
     z32_fb_layout[fb] = (int8)l;
     z32_stats.relayouts++;
+    PpuHybridSpansFull(z32_hybrid.fb);
   }
+  if (l != 2) PpuHybridSpansFull(z32_hybrid.fb);   /* (a frame drawn whole: no line is as it was) */
   z32_drawn_layout = (uint8)l;
-  z32_stats.direct += l;
+  z32_stats.direct += l == 1;
+  uint16 tb0 = frt();
   ZeldaDrawPpuFrameBegin(&ctx, (uint8 *)FB8 + kLayouts[l].offset, kLayouts[l].step, kLayouts[l].flags);
   ZeldaDrawCtxCopy(&z32_slave_ctx, &z32_slave_ppu, &ctx);
+  z32_stats.begin_ticks += (uint16)(frt() - tb0);
+  CCR = 0x11;                                    /* purge: the slave drew some of our lines last time
+                                                    (ppu.c's line tables; the slave purges too) */
   THRU(z32_slave_from) = split;
   THRU(z32_slave_cmd) = ++seq;
   uint16 ta = frt();
+#ifdef Z32_MD
+  MdPlanes_Send(&z32_md, g_zenv.ppu, &z32_hybrid, &z32_sink);   /* the slave draws meanwhile */
+#endif
   ZeldaDrawPpuLines(&ctx, 0, (int)split - 1, ctx.height);   /* the events to the end: the PPU
                                                                  ends as after a whole frame */
   uint16 tb = frt();
   while (THRU(z32_slave_done) != seq) { }
   uint16 tc = frt();
   ZeldaDrawPpuFrameEnd(&ctx);
-  snapshot_palette();                            /* shown with this picture */
+  bool shown = true;
+#ifdef Z32_MD
+  if (l == 2 && (g_zenv.ppu->hybridFail || z32_hybrid.why ||   /* (why: the ops did not fit) */
+                 *(volatile uint8 *)((uintptr_t)&z32_slave_ppu.hybridFail | 0x20000000))) {
+    md_off = true;                               /* not shown: the next one is drawn whole */
+    shown = false;
+    z32_stats.hybrid_fail++;
+  } else {
+    MdPlanes_Show(&z32_md, l == 2 ? z32_hybrid.layers : 0, &z32_sink);
+    z32_stats.hybrid += l == 2;
+  }
+  z32_stats.ops_ticks += z32_ops_t;
+#endif
+  if (shown) snapshot_palette(l);                /* shown with this picture */
   uint32 tm = (uint16)(tb - ta), ts = THRU(z32_slave_ticks);
   z32_stats.split = split; z32_stats.slave_sum += ts; z32_stats.wait_sum += (uint16)(tc - tb);
   /* balance: the per-line cost of each part; move the split toward equal times (a few lines a
@@ -317,6 +415,7 @@ static void draw_frame(void) {
     if (want > 208) want = 208;
     split = want;
   }
+  return shown;
 }
 
 #ifdef Z32_STOP_ON_BAD
@@ -324,25 +423,59 @@ static void flip(void);
 static void palette_from_cgram(void);
 static void NORETURN z32_stop(void) {
   __asm__ volatile("" ::: "memory");             /* z32_stats is written before we hold */
-  snapshot_palette();
+  snapshot_palette(z32_drawn_layout);
   flip();                                        /* the frame just drawn, on screen */
   VDP_DISPMODE = kLayouts[z32_drawn_layout].dispmode;
-  if (z32_drawn_layout == 0) palette_from_cgram();
+  if (z32_drawn_layout != 1) palette_from_cgram();
   COMM14 = 0x0BAD;
   for (;;) __asm__ volatile("" ::: "memory");
 }
 #endif
 
-/* the picture drawn last on screen: the frame buffer swap (at the V-blank) and its palette */
+/* the picture just drawn goes on screen at the next V-blank: right after drawing, the frame
+ * buffer swap is asked for (outside a V-blank the 32X does it at the next one) and the Genesis's
+ * ops committed (the 68000 applies them in that V-blank) - both halves change together, and the
+ * master goes on with the game meanwhile. A change of the 32X's mode (direct colour <-> 8-bit)
+ * waits for the V-blank instead (swap_pictures). */
+static uint16 z32_swap_cur;
+static bool z32_swap_async;
+static void request_swap(void) {
+  z32_swap_async = kLayouts[z32_drawn_layout].dispmode == kLayouts[z32_shown_layout].dispmode;
+  if (!z32_swap_async) return;
+#ifdef Z32_MD
+  COMM0 = 71;                                    /* commit */
+  for (uint32 n = 0; n < 4000000 && COMM0 != 0; n++) comm_pause();
+  z32_sink.total = 0;                            /* the next commit's room */
+#endif
+  while (VDP_FBCTL & 0x8000) { }                 /* not in a V-blank: the swap waits for the next */
+  z32_swap_cur = VDP_FBCTL & 1;
+  VDP_FBCTL = (uint16_t)(z32_swap_cur ^ 1);
+}
+/* at the next pass (a V-blank has come): the swap done, the palette and mode of the picture */
 static void swap_pictures(void) {
   uint16 t4 = frt();
+  if (z32_swap_async) {
+    while ((VDP_FBCTL & 1) == z32_swap_cur) { }
+  } else {
+#ifdef Z32_MD
+  uint16 applied = COMM12;
+  COMM0 = 71;
+  for (uint32 n = 0; n < 4000000 && COMM0 != 0; n++) comm_pause();
+  for (uint32 n = 0; n < 4000000 && COMM12 == applied; n++) { }
+  uint16_t cur = VDP_FBCTL & 1;
+  VDP_FBCTL = (uint16_t)(cur ^ 1);
+  while ((VDP_FBCTL & 1) == cur) { }
+  z32_sink.total = 0;                            /* the next commit's room */
+#else
   flip();
+#endif
+  }
   uint16 t5 = frt();
   if (z32_shown_layout != z32_drawn_layout) {    /* in the V-blank the swap happened in */
     VDP_DISPMODE = kLayouts[z32_drawn_layout].dispmode;
     z32_shown_layout = z32_drawn_layout;
   }
-  if (z32_drawn_layout == 0) palette_from_cgram();   /* direct colour: no palette */
+  if (z32_drawn_layout != 1) palette_from_cgram();   /* direct colour: no palette */
   z32_stats.flip_sum += (uint16)(t5 - t4);
   z32_stats.pal_sum += (uint16)(frt() - t5);
 }
@@ -371,8 +504,12 @@ int main(void) {
   if (!ZeldaStartReplayFromMemory(z32_replay, (size_t)(z32_replay_end - z32_replay))) Die("replay");
 #endif
   video_init();
+  MdPlanes_Reset(&z32_md);                       /* every tile and cell goes to the Genesis */
 #ifdef Z32_PPU_TIMING
   { extern Ppu *g_ppu_time_ctx; g_ppu_time_ctx = g_zenv.ppu; }
+#endif
+#ifdef Z32_HYB_TIMING
+  { extern Ppu *g_hyb_time_ctx; g_hyb_time_ctx = g_zenv.ppu; }
 #endif
 #ifdef Z32_PATTERN
   for (;;) {                                     /* display test: colour bars, no game */
@@ -400,13 +537,13 @@ int main(void) {
     do {                                         /* wait until a frame is due */
       now = md_frames();
       clock += (uint16)(now - last), last = now;
-    } while (clock <= credited && kMaxSkip > 1 && !pending);
+    } while (clock <= credited && kMaxSkip > 1);
+    if (pending) { swap_pictures(); pending = false; }   /* the V-blank of its swap */
     uint32 n = kMaxSkip > 1 ? clock - credited : 1;
     if (n < 1) n = 1;
     if (n > kMaxSkip) n = kMaxSkip;
     credited = kMaxSkip > 1 && clock - credited > kMaxSkip ? clock - kMaxSkip + n : credited + n;
     for (uint32 k = 0; k < n; k++, f++) {
-      if (k == 1 && pending) { swap_pictures(); pending = false; }
       uint16 t0 = frt();
       ZeldaRunFrame(snes_input(z32_pad));        /* a replay ignores it; after one, the pad plays */
       uint32 dl = (uint16)(frt() - t0);
@@ -434,23 +571,20 @@ int main(void) {
 #endif
     }
 #endif
-    /* the last picture goes on screen at the V-blank after it was drawn and the first game
-     * frame of this pass ran (the master would only wait for the swap otherwise) */
-    if (pending) { swap_pictures(); pending = false; }
     uint16 t2 = frt(), m2 = md_frames();
-    draw_frame();
+    bool shown = draw_frame();
     uint16 t3 = frt(), m3 = md_frames();
     check_picture(f - 1);
     uint32 dd = (uint16)(t3 - t2);
     z32_stats.draw_sum += dd;
-    if (z32_drawn_layout) z32_stats.direct_draw_sum += dd;
+    if (z32_drawn_layout == 1) z32_stats.direct_draw_sum += dd;
     if (dd > z32_stats.draw_max) z32_stats.draw_max = dd;
     z32_stats.v_draw += (uint16)(m3 - m2);
     z32_stats.drawn++;
     z32_stats.heap_peak = (uint32)(z32_heap_peak - (char *)0x06000000);
-    pending = true;
+    pending = shown;
+    if (shown) request_swap();
     z32_stats.v_total = clock - clock_base;
-    COMM14 = (uint16)f;
   }
 }
 

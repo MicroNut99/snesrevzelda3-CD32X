@@ -147,6 +147,7 @@ void Intro_SetupScreen() {  // 828000
   for(int i = 0; i < 17; i++)
     main_palette_buffer[144 + i] = 0x7fff;
 
+  ZeldaVramDirty(0x27f0, 17);
   for (int i = 0; i < 17; i++)
     g_zenv.vram[0x27f0 + i] = 0;
 

@@ -268,7 +268,7 @@ void SaveGameFile() {  // 80894a
 }
 
 void TransferMode7Characters() {  // 80e399
-  le16 *dst = g_zenv.vram;
+  le16 *dst = VramW(0, 0x4000);
   const uint8 *src = kOverworldMapGfx;
   for (int i = 0; i != 0x4000; i++)
     HIBYTE_LE(dst[i]) = src[i];
@@ -1276,7 +1276,7 @@ void WorldMap_SetUpHDMA() {  // 8abc96
 }
 
 void WorldMap_FillTilemapWithEF() {  // 8abda5
-  le16 *dst = g_zenv.vram;
+  le16 *dst = VramW(0, 0x4000);
   for (int i = 0; i != 0x4000; i++)
     BYTE_LE(dst[i]) = 0xef;
 }

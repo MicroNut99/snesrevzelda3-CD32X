@@ -40,6 +40,15 @@ static void load_assets(const char *n) {
   }
 }
 static uint32 pix[256 * 240];
+#ifdef ZH_MDSTAT                         /* pc/zhx_md: the Genesis-plane analysis (pc/zh_mdstat.c) */
+void zh_mdstat_before_logic(void);
+void zh_mdstat_draw(FILE *out, int f, uint8 *buf, size_t pitch, uint32 flags);
+#endif
+/* ZH_MDCHECK / ZH_VRAMCHECK: the Genesis-planes picture (pc/zh_md.c) */
+void zh_md_reset(void);
+void zh_md_frame(int f, uint8 *ref, uint32 dflags);
+void zh_md_report(void);
+void zh_vram_check(int f);
 int main(int argc, char **argv) {
   if (argc < 3) { fprintf(stderr, "usage\n"); return 2; }
   load_assets(argv[1]);
@@ -57,10 +66,17 @@ int main(int argc, char **argv) {
     if (getenv("ZH_APULOG")) g_apu_log = fopen(getenv("ZH_APULOG"), "w"); }
   FILE *pxf = getenv("ZH_PIXHASH") ? fopen(getenv("ZH_PIXHASH"), "w") : 0;
   int input = 0;
+  const bool mdcheck = getenv("ZH_MDCHECK") != NULL;
+  if (mdcheck) zh_md_reset();
   for (int f = 0; f < frames; f++) {
     const char *p = script;               /* "frame:bits" pairs: the pad from that frame on */
     while (*p) { int fr = atoi(p); const char *c = strchr(p, ':'); if (!c) break; if (fr == f) input = (int)strtol(c + 1, 0, 0);
                  const char *n = strchr(c, ','); if (!n) break; p = n + 1; }
+#ifdef ZH_MDSTAT
+    static FILE *mdf;
+    if (!mdf && getenv("ZH_MDSTAT")) mdf = fopen(getenv("ZH_MDSTAT"), "w");
+    if (mdf) zh_mdstat_before_logic();
+#endif
     ZeldaRunFrame(input);
     if (hf) {
       uint32 h = 2166136261u;
@@ -92,6 +108,17 @@ int main(int argc, char **argv) {
     const uint32 dflags = kPpuRenderFlags_NewRenderer | (rgb15 ? kPpuRenderFlags_Rgb15 : kPpuRenderFlags_Index8) |
                           (getenv("ZH_REF") ? kPpuRenderFlags_NoPaint : 0);
     const int dpitch = rgb15 ? 512 : 256;
+#ifdef ZH_MDSTAT
+    if (mdf) {                     /* ZH_MDSTAT=file: every frame drawn (as ZH_DRAWALL), analysed */
+      zh_mdstat_draw(mdf, f, idx, dpitch, dflags);
+      drawn = true;
+    } else
+#endif
+    if (mdcheck) {                 /* ZH_MDCHECK: every frame, both pictures, compared (8-bit) */
+      if (getenv("ZH_VRAMCHECK")) zh_vram_check(f);
+      zh_md_frame(f, idx, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);
+      drawn = true;
+    } else
     if (getenv("ZH_SKIP") && f % atoi(getenv("ZH_SKIP")) != 0) {
       ZeldaSkipPpuFrame();         /* frame skip as the 32X: the RAM must stay the same */
     } else if (getenv("ZH_DRAWALL")) {    /* draw every frame as the game (and the 32X) does: the draw
@@ -139,6 +166,7 @@ int main(int argc, char **argv) {
       fclose(o);
     }
   }
+  if (mdcheck) zh_md_report();
   return 0;
 }
 MemBlk FindInAssetArray(int asset, int idx) {

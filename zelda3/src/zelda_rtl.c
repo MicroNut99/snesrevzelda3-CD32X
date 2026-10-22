@@ -220,8 +220,15 @@ void ZeldaDrawCtxCopy(ZeldaDrawCtx *dst, Ppu *dst_ppu, const ZeldaDrawCtx *ctx) 
 // Lines 0..last (the frame's 0..height): the events of every line (HDMA, the line-128 IRQ),
 // the drawing of from..to. A context that runs the events to the frame's end leaves its PPU as
 // a whole frame's drawing does (registers the HDMA changed stay changed into the next frame).
+#ifdef Z32_HYB_TIMING
+extern "C" uint16 z32_frt(void);
+extern "C" { extern uint32 g_hyb_t[8]; extern Ppu *g_hyb_time_ctx; }
+#endif
 void ZeldaDrawPpuLines(ZeldaDrawCtx *ctx, int from, int to, int last) {
   Ppu *ppu = ctx->ppu;
+#ifdef Z32_HYB_TIMING
+  uint16 t0 = z32_frt();
+#endif
   for (int i = 0; i <= last; i++) {
     if (i == 128 && ctx->irq_flag_copy) {
       ppu_write(ppu, (uint8)BG3HOFS, (uint8)ctx->bg3_hofs);
@@ -234,6 +241,9 @@ void ZeldaDrawPpuLines(ZeldaDrawCtx *ctx, int from, int to, int last) {
     SimpleHdma_DoLine(&ctx->hdma[0], ppu);
     SimpleHdma_DoLine(&ctx->hdma[1], ppu);
   }
+#ifdef Z32_HYB_TIMING
+  if (ppu == g_hyb_time_ctx) g_hyb_t[7] += (uint16)(z32_frt() - t0);
+#endif
 }
 
 void ZeldaDrawPpuFrameEnd(ZeldaDrawCtx *ctx) {
@@ -304,11 +314,28 @@ static void ZeldaRunGameLoop() {
   nmi_boolean = 0;
 }
 
+uint8 g_vram_dirty[0x8000 / 16 / 8];
+void ZeldaVramDirty(uint32 addr, uint32 nwords) {
+  if (!nwords)
+    return;
+  uint32 b = (addr & 0x7fff) >> 4, e = ((addr & 0x7fff) + nwords - 1) >> 4;
+  if (e - b >= 0x800 - 1 || nwords > 0x8000) {   // the whole VRAM (or a wrap past its end)
+    memset(g_vram_dirty, 0xff, sizeof g_vram_dirty);
+    return;
+  }
+  for (; b <= e; b++) {
+    uint32 k = b & 0x7ff;
+    g_vram_dirty[k >> 3] |= (uint8)(1 << (k & 7));
+  }
+}
+
 void ZeldaInitialize() {
   g_zenv.dma = dma_init(NULL);
   g_zenv.ppu = ppu_init();
   g_zenv.ram = g_ram;
   g_zenv.sram = (uint8*)calloc(8192, 1);
+  if (!g_zenv.ppu || !g_zenv.ppu->vram || !g_zenv.sram)
+    Die("out of memory");             // Z32X: the SDRAM is nearly full - better stop than lose saves
   g_zenv.vram = g_zenv.ppu->vram;
   g_zenv.player = SpcPlayer_Create();
   SpcPlayer_Initialize(g_zenv.player);
@@ -406,9 +433,15 @@ void loadFunc(void *ctx, void *data, size_t data_size) {
 static void InternalSaveLoad(SaveLoadFunc *func, void *ctx) {
   uint8 junk[58] = { 0 };
   func(ctx, junk, 27);
+#ifdef Z32X  // no sound chip on the 32X: its RAM and DSP state are passed over (64 bytes at a time)
+  for (int i = 0; i < 0x10000 / 32; i++) func(ctx, junk, 32);   // apu ram
+  func(ctx, junk, 40); // junk
+  for (int i = 0; i < 3024 / 48; i++) func(ctx, junk, 48);      // 3024 bytes of dsp
+#else
   func(ctx, g_zenv.player->ram, 0x10000);  // apu ram
   func(ctx, junk, 40); // junk
   dsp_saveload(g_zenv.player->dsp, func, ctx); // 3024 bytes of dsp
+#endif
   func(ctx, junk, 15); // spc junk
   dma_saveload(g_zenv.dma, func, ctx); // 192 bytes of dma state
   ppu_saveload(g_zenv.ppu, func, ctx); // 66619 + 512 + 174
@@ -436,6 +469,7 @@ static void LoadSnesState(SaveLoadFunc *func, void *ctx) {
   // Do the actual loading
   ZeldaApuLock();
   InternalSaveLoad(func, ctx);
+  ZeldaVramDirty(0, 0x8000);
   memcpy(g_zenv.ram + 0x1DBA0, g_zenv.ram + 0x1b00, 224 * 2); // hdma table was moved
 
   ZeldaRestoreMusicAfterLoad_Locked(false);
@@ -573,13 +607,14 @@ void StateRecorder_Load(StateRecorder *sr, FILE *f, bool replay_mode) {
 }
 
 /* Z32X: StateRecorder_Load's replay branch for a recording in memory (the 32X has no files):
- * the 32-byte header (little-endian words), then the input log. Only recordings that start
- * from power-on (no base snapshot) - chapter 1. */
+ * the 32-byte header (little-endian words), the input log, and the base snapshot if it has one
+ * (chapter 1 starts from power-on; the others from a snapshot). */
 bool ZeldaStartReplayFromMemory(const uint8 *sav, size_t len) {
   StateRecorder *sr = &state_recorder;
   uint32 hdr[8];
   for (int i = 0; i < 8; i++) hdr[i] = LE32(sav + 4 * i);
-  if (hdr[0] != 1 || (hdr[5] & 1) || 32 + hdr[2] > len)
+  uint32 snap = (hdr[5] & 1) ? hdr[6] : 0;      // a base snapshot after the log (chapters 2-13)
+  if (hdr[0] != 1 || 32 + hdr[2] + snap > len)
     return false;
   sr->total_frames = hdr[1];
   ByteArray_Resize(&sr->log, hdr[2]);
@@ -591,7 +626,12 @@ bool ZeldaStartReplayFromMemory(const uint8 *sav, size_t len) {
   sr->last_inputs = 0;
   sr->replay_pos = sr->replay_pos_last_complete = 0;
   sr->replay_frame_counter = 0;
-  ZeldaReset(false);
+  if (snap) {
+    LoadFuncState state = { (uint8 *)sav + 32 + hdr[2], (uint8 *)sav + 32 + hdr[2] + snap };
+    LoadSnesState(&loadFunc, &state);
+  } else {
+    ZeldaReset(false);
+  }
   return true;
 }
 

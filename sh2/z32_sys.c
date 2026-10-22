@@ -27,3 +27,12 @@ int _getpid(void) { return 1; }
 int _gettimeofday(void *t, void *z) { (void)t; (void)z; return -1; }
 int _unlink(const char *n) { (void)n; return -1; }
 int _link(const char *a, const char *b) { (void)a; (void)b; return -1; }
+/* a failed assert: where, for the emulator (z32_assert_line, z32_assert_file), then hold */
+int z32_assert_line;
+const char *z32_assert_file;
+void __assert_func(const char *file, int line, const char *func, const char *expr) {
+  (void)func; (void)expr;
+  z32_assert_file = file, z32_assert_line = line;
+  *(volatile unsigned short *)0x2000402C = 0xA55E;       /* COMM12 */
+  for (;;) { }
+}

@@ -29,6 +29,17 @@ typedef struct ZeldaEnv {
 extern ZeldaEnv g_zenv;
 extern int frame_ctr_dbg;
 
+// Z32X: which VRAM words the game wrote since the last look, a bit per 16 words (one 4bpp tile,
+// half a tilemap row) - the 32X keeps the Genesis's copy of the backgrounds in step with them.
+// Every writer of g_zenv.vram marks what it writes (VramW / ZeldaVramDirty); pc/zh_main.c
+// (ZH_VRAMCHECK) checks that against a copy of the VRAM after every frame.
+extern uint8 g_vram_dirty[0x8000 / 16 / 8];
+void ZeldaVramDirty(uint32 addr, uint32 nwords);
+static inline le16 *VramW(uint32 addr, uint32 nwords) {   // &g_zenv.vram[addr], marked
+  ZeldaVramDirty(addr, nwords);
+  return &g_zenv.vram[addr];
+}
+
 typedef void PlayerHandlerFunc();
 typedef void HandlerFuncK(int k);
 
