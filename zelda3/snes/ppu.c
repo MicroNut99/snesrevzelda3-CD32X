@@ -245,6 +245,7 @@ void PpuBeginDrawing(Ppu *ppu, uint8_t *pixels, size_t pitch, uint32_t render_fl
       ppu->bright5Half[i * 2] = ppu->bright5Half[i * 2 + 1] = ppu->bright5[i] = (uint8)(i * ppu_brightness / 15);
     memset(&ppu->bright5[32], ppu->bright5[31], 31);
   }
+  ppu->tintKey = 0;
   if (render_flags & kPpuRenderFlags_Rgb15) {   // Z32X: the CGRAM does not change during a frame
     for (int i = 0; i < 256; i++) {
       uint32 c = ppu->cgram[i];
@@ -1041,7 +1042,8 @@ static PPU_NOINLINE void PpuHybridCheck(Ppu *ppu) {
   const BgLayer *b1 = &ppu->bgLayer[0], *b2 = &ppu->bgLayer[1];
   const MdHybrid *h = ppu->hybrid;
   // the registers the answer depends on, as on the last line checked: the same answer
-  uint32 k0 = b1->hScroll | b2->hScroll << 16, k1 = b1->vScroll | b2->vScroll << 16;
+  uint32 k0 = b1->hScroll | b2->hScroll << 16 | (ppu->screenEnabled[1] & 31) << 10 | ppu->subtractColor << 15 |
+              (uint32)(ppu->screenWindowed[1] & 31) << 26, k1 = b1->vScroll | b2->vScroll << 16;
   uint32 k2 = ppu->window1left | ppu->window1right << 8 | ppu->window2left << 16 | ppu->window2right << 24;
   uint32 k3 = ppu->windowsel;
   uint32 k4 = ppu->clipMode | ppu->preventMathMode << 2 | ppu->mathEnabled << 4 | ppu->halfColor << 10 |
@@ -1054,9 +1056,21 @@ static PPU_NOINLINE void PpuHybridCheck(Ppu *ppu) {
   key[0] = k0, key[1] = k1, key[2] = k2, key[3] = k3, key[4] = k4, key[5] = (uint32)(uintptr_t)h;
   if (ppu->forcedBlank || ppu->mode != 1 || (ppu->mosaicEnabled & 7) ||
       b1->hScroll != h->sig_hs[0] || b2->hScroll != h->sig_hs[1] ||
-      b1->vScroll != h->sig_vs[0] || b2->vScroll != h->sig_vs[1] || (ppu->screenEnabled[0] & 3) != h->layers ||
+      b1->vScroll != h->sig_vs[0] || b2->vScroll != h->sig_vs[1] ||
+      ((ppu->screenEnabled[0] & 3) | h->flip) != h->layers || b1->tilemapWider == h->small || b2->tilemapHigher == h->small ||
       ((ppu->screenWindowed[0] & 3) && (ppu->windowsel & 0xaa))) {
     ppu->hybridFail = 1;
+    return;
+  }
+  if (h->flip) {                                // the layer under everything: still so on this line
+    if (MdPlanes_FlipOk(ppu) != h->flip)
+      ppu->hybridFail = 1;
+    return;
+  }
+  if (h->tint) {                                // the colour math as the colours were made for
+    uint8 me, op; uint16 c;
+    if (!MdPlanes_TintOk(ppu, &me, &c, &op) || me != h->tint || c != h->tint_c || op != h->tint_op)
+      ppu->hybridFail = 1;
     return;
   }
   if (ppu->clipMode == 0 && (ppu->preventMathMode == 3 || !ppu->mathEnabled))
@@ -1108,15 +1122,16 @@ static PPU_NOINLINE void PpuHybridPunch(Ppu *ppu, uint y, uint8 *line, int x0, i
   if (x1 > 256) x1 = 256;
   uint32 md_pal = ppu->hybrid->md_pal;
   for (uint layer = 0; layer < 2; layer++, which >>= 2) {
-    if (!(which & 3) || !IS_SCREEN_ENABLED(ppu, 0, layer))
+    if (!(which & 3) || !(ppu->hybrid->layers >> layer & 1))
       continue;
     BgLayer *bg = &ppu->bgLayer[layer];
     uint yy = y + bg->vScroll;
-    int sc_offs = bg->tilemapAdr + (((yy >> 3) & 0x1f) << 5) + ((yy & 0x100) ? 0x800 : 0);
+    uint32 big = ppu->hybrid->small ? 0 : 0x100;  // 64x64 maps: the screens beside / below
+    int sc_offs = bg->tilemapAdr + (((yy >> 3) & 0x1f) << 5) + ((yy & big) ? 0x800 : 0);
     uint hs = bg->hScroll;
     for (int sx = x0 - (int)((x0 + hs) & 7); sx < x1; sx += 8) {
       uint x = sx + hs;                         // the map x of the cell's pixel 0
-      uint32 e = ppu->vram[(sc_offs + ((x >> 3) & 0x1f) + ((x & 0x100) ? 0x400 : 0)) & 0x7fff];
+      uint32 e = ppu->vram[(sc_offs + ((x >> 3) & 0x1f) + ((x & big) ? 0x400 : 0)) & 0x7fff];
       if (!(which & ((e & 0x2000) ? 2 : 1)) || !(md_pal & kBit8[e >> 10 & 7]))
         continue;
       uint32 row = HYB_ROW(bg, yy, e);
@@ -1133,30 +1148,33 @@ static PPU_NOINLINE void PpuHybridPunch(Ppu *ppu, uint y, uint8 *line, int x0, i
 // front, then punched by the Genesis's pixels above them (punch: the which of PpuHybridPunch)
 static PPU_NOINLINE void PpuHybridCells(Ppu *ppu, uint y, uint8 *line, uint layer, uint32 hi, uint32 punch, int *span) {
   const MdHybrid *h = ppu->hybrid;
-  if (!h->nrows[layer] || !IS_SCREEN_ENABLED(ppu, 0, layer))
+  if (!h->nrows[layer] || !(h->layers >> layer & 1))
     return;
   BgLayer *bg = &ppu->bgLayer[layer];
   uint yy = y + bg->vScroll;
-  uint r = (((yy >> 3) & 63) - h->row0[layer]) & 63;
+  uint mk = h->small ? 31 : 63, width = h->small ? 256 : 512;
+  uint r = (((yy >> 3) & mk) - h->row0[layer]) & mk;
   if (r >= h->nrows[layer])
     return;
   for (uint i = h->start[layer][r], end = h->start[layer][r + 1]; i < end; i++) {
     uint32 e = h->cell[layer][i];
     if ((e >> 13 & 1) != hi)
       continue;
-    int sx = (int)((h->cx[layer][i] * 8 - bg->hScroll) & 511);
-    if (sx >= 256) sx -= 512;                   // the cell cut by the left edge
-    if (sx <= -8 || sx >= 256)
-      continue;
-    uint32 row = HYB_ROW(bg, yy, e), base = h->off_base[e >> 10 & 7];
-    span[0] = IntMin(span[0], sx), span[1] = IntMax(span[1], sx + 8);
-    for (int k = 0; k < 8; k++, row >>= 4) {
-      int px = sx + k;
-      if ((row & 15) && px >= 0 && px < 256)
-        line[px] = (uint8)(base + (row & 15));
+    int sx0 = (int)((h->cx[layer][i] * 8 - bg->hScroll) & (width - 1));
+    // where it shows: at sx0 if on screen, and at sx0 - width if that is cut by the left edge
+    for (int sx = sx0; sx > -8; sx -= (int)width) {
+      if (sx >= 256)
+        continue;
+      uint32 row = HYB_ROW(bg, yy, e), base = h->off_base[e >> 10 & 7];
+      span[0] = IntMin(span[0], IntMax(sx, 0)), span[1] = IntMax(span[1], IntMin(sx + 8, 256));
+      for (int k = 0; k < 8; k++, row >>= 4) {
+        int px = sx + k;
+        if ((row & 15) && px >= 0 && px < 256)
+          line[px] = (uint8)(base + (row & 15));
+      }
+      if (punch)
+        PpuHybridPunch(ppu, y, line, sx, sx + 8, punch);
     }
-    if (punch)
-      PpuHybridPunch(ppu, y, line, sx, sx + 8, punch);
   }
 }
 
@@ -1179,7 +1197,8 @@ static bool HybridLineHasCells(Ppu *ppu, uint y) {
   const MdHybrid *h = ppu->hybrid;
   for (uint layer = 0; layer < 2; layer++) {
     if (!h->nrows[layer]) continue;
-    uint r = ((((y + ppu->bgLayer[layer].vScroll) >> 3) & 63) - h->row0[layer]) & 63;
+    uint mk = h->small ? 31 : 63;
+    uint r = ((((y + ppu->bgLayer[layer].vScroll) >> 3) & mk) - h->row0[layer]) & mk;
     if (r < h->nrows[layer] && h->start[layer][r] != h->start[layer][r + 1]) return true;
   }
   return false;
@@ -1194,7 +1213,7 @@ long g_hyb_count[4];                             // lines, skipped (as drawn las
 // BG3's cells of line y that are not empty (MdHybrid's column masks): the low ones painted behind
 // the planes (+32), the high ones kept for the end - as PpuPaintBackground, without its walk over
 // the empty cells (most of BG3 is empty; the status bar and the text are a few cells)
-static PPU_NOINLINE void PpuHybridBg3(Ppu *ppu, uint y, uint8 *line, PpuPaintList *hi, int *span) {
+static PPU_NOINLINE void PpuHybridBg3(Ppu *ppu, uint y, uint8 *line, PpuPaintList *hi, int *span, uint32 lo_add) {
   const MdHybrid *h = ppu->hybrid;
   BgLayer *bg = &ppu->bgLayer[2];
   PpuPaintItem *it = hi->item;
@@ -1227,7 +1246,7 @@ static PPU_NOINLINE void PpuHybridBg3(Ppu *ppu, uint y, uint8 *line, PpuPaintLis
         } else {
           uint8 *d = line + x;
           for (int k = 0; k < n; k++, row >>= 4)
-            if (row & 15) d[k] = (uint8)(base + 32 + (row & 15));
+            if (row & 15) d[k] = (uint8)(base + lo_add + (row & 15));
         }
       }
     }
@@ -1258,7 +1277,7 @@ static PPU_NOINLINE void PpuPaintHybridLine(Ppu *ppu, uint y) {
   if (!spr && !ppu->forcedBlank && !(ppu->screenWindowed[0] & 4) && !HybridLineHasCells(ppu, y)) {
     // generation 10 bits, H scroll 10, map row 6, line in the row 3, BG3 on, 1 (valid)
     sig = (uint32)(h->bg3_row_gen[r3] & 0x3ff) << 22 | (b3->hScroll & 0x3ff) << 12 | r3 << 6 | (yy3 & 7) << 3 |
-          (ppu->screenEnabled[0] & 4) | 1;
+          (ppu->screenEnabled[0] & 4) | (h->flip != 0) << 1 | 1;
     uint8 *sp = HYB_SIG(h->fb, y - 1);
     uint32 old = (uint32)sp[0] << 24 | sp[1] << 16 | sp[2] << 8 | sp[3];
     if (old == sig) {
@@ -1272,12 +1291,40 @@ static PPU_NOINLINE void PpuPaintHybridLine(Ppu *ppu, uint y) {
     sp[0] = (uint8)(sig >> 24), sp[1] = (uint8)(sig >> 16), sp[2] = (uint8)(sig >> 8), sp[3] = (uint8)sig;
   }
   int span[2] = { 256, 0 };
-  if (!ppu->forcedBlank) {
+  if (!ppu->forcedBlank && h->flip) {
+    // flipped (md_planes.h): the layer under (u) is on plane B, below everything; the 32X's part
+    // all in front, punched where the layer on top (t, plane A) is
+    PpuPaintList *hi = ppu->paintHi;
+    uint32 u = h->flip - 1, t = u ^ 1, t_any = t ? 4 | 8 : 1 | 2, t_hi = t ? 8 : 2;
+    PpuHybridCells(ppu, y, line, u, 0, 0, span);                            // the layer under's cells
+    PpuHybridCells(ppu, y, line, u, 1, 0, span);
+    if (!(h->bg3_rows[r3 >> 3] & kBit8[r3 & 7]) || !IS_SCREEN_ENABLED(ppu, 0, 2)) {
+      hi[2].n = 0;
+    } else if (!IS_SCREEN_WINDOWED(ppu, 0, 2)) {
+      PpuHybridBg3(ppu, y, line, &hi[2], span, 0);                          // BG3 lo, in front
+      HYB_COUNT(2);
+    } else {
+      PpuPaintBackground<false, false, 0>(ppu, y, false, 2, &hi[2], line);
+      span[0] = 0, span[1] = 256;
+      HYB_COUNT(2);
+    }
+    if (spr) span[0] = IntMin(span[0], ppu->objMinX), span[1] = IntMax(span[1], ppu->objMaxX), HYB_COUNT(3);
+    if (spr && (ppu->objLevels & 3)) PpuPaintSprites<false>(ppu, false, 1 | 2, line);   // sprites 0, 1
+    if (span[0] < span[1]) PpuHybridPunch(ppu, y, line, span[0], span[1], t_any);      // all under the top
+    PpuHybridCells(ppu, y, line, t, 0, 0, span);                            // its lo cells
+    if (spr && (ppu->objLevels & 4)) {
+      PpuPaintSprites<false>(ppu, false, 4, line);                         // sprites 2
+      PpuHybridPunch(ppu, y, line, ppu->objMinX, ppu->objMaxX, t_hi);      //   under its hi
+    }
+    PpuHybridCells(ppu, y, line, t, 1, 0, span);                            // its hi cells
+    if (spr && (ppu->objLevels & 8)) PpuPaintSprites<false>(ppu, false, 8, line);   // sprites 3
+    PpuPaintKept<false>(&hi[2], line, 0);                                   // BG3 hi
+  } else if (!ppu->forcedBlank) {
     PpuPaintList *hi = ppu->paintHi;
     if (!(h->bg3_rows[r3 >> 3] & kBit8[r3 & 7]) || !IS_SCREEN_ENABLED(ppu, 0, 2)) {
       hi[2].n = 0;                              // a row of empty tiles
     } else if (!IS_SCREEN_WINDOWED(ppu, 0, 2)) {
-      PpuHybridBg3(ppu, y, line, &hi[2], span);                             // BG3 lo, behind (33-63)
+      PpuHybridBg3(ppu, y, line, &hi[2], span, 32);                         // BG3 lo, behind (33-63)
       HYB_COUNT(2);
     } else {
       PpuPaintBackground<false, false, 32>(ppu, y, false, 2, &hi[2], line);   // BG3 lo, behind (33-63)
@@ -1461,6 +1508,25 @@ static PPU_NOINLINE void PpuPaintLine(Ppu *ppu, uint y) {
       else
         ppu->brightness == 15 ? PpuBlendSpan<true, false>(d, pm, ps, n, ppu->cgram, cmask, bmap)
                               : PpuBlendSpan<false, false>(d, pm, ps, n, ppu->cgram, cmask, bmap);
+    } else if (!rendered_subscreen && keep) {
+      // the fixed colour only (nothing on the subscreen): a pixel's colour, or the one the math
+      // makes of it - those from a palette made once a frame for these settings
+      uint32 op = ppu->subtractColor | (ppu->halfColor && !ppu->addSubscreen) << 1;
+      uint32 key = fixed_color | op << 15 | (uint32)ppu->brightness << 20 | 1u << 31;
+      if (ppu->tintKey != key) {
+        uint32 r2 = fixed_color & 31, g2 = fixed_color >> 5 & 31, b2 = fixed_color >> 10;
+        for (int i = 0; i < 256; i++) {
+          uint32 c = ppu->cgram[i], r = c & 31, g = c >> 5 & 31, b = c >> 10 & 31;
+          if (op & 1) r = r >= r2 ? r - r2 : 0, g = g >= g2 ? g - g2 : 0, b = b >= b2 ? b - b2 : 0;
+          else r += r2, g += g2, b += b2;
+          if (op & 2) r >>= 1, g >>= 1, b >>= 1;
+          ppu->tint15[i] = (uint16)(bmap[b] << 10 | bmap[g] << 5 | bmap[r]);
+        }
+        ppu->tintKey = key;
+      }
+      const uint16 *tp = ppu->tint15;
+      for (uint32 i = left; i < right; i++)
+        dst[i] = line[i + 256] ? tp[line[i]] : pal[line[i]];
     } else {
       const uint8 *half_color_map = ppu->halfColor ? ppu->bright5Half : bmap;
       math_enabled_cur |= ppu->addSubscreen << 8 | ppu->subtractColor << 9;

@@ -167,6 +167,8 @@ struct Ppu {
   uint8_t bright5[32 + 31];
   uint8_t bright5Half[32 * 2];
   uint16_t palette15[256];
+  uint16_t tint15[256];        // Z32X: the colours the fixed-colour math makes of them (PpuPaintLine)
+  uint32_t tintKey;            //   the settings they were made for (0: none yet this frame)
   uint16_t cgram[0x100];
   uint8_t mosaicModulo[kPpuXPixels];
 #ifndef Z32X                            // (the 4x mode-7 picture only: not on the 32X - 1 KB of SDRAM)

@@ -53,7 +53,7 @@ static void CopyToVram(uint32 dstv, const uint8 *src, int len) {
 
 static void CopyToVramVertical(uint32 dstv, const uint8 *src, int len) {
   assert(!(len & 1));
-  le16 *dst = VramW(dstv, (len >> 1) * 32);
+  le16 *dst = VramWS(dstv, len >> 1, 32);
   for (int i = 0, i_end = len >> 1; i < i_end; i++, dst += 32, src += 2)
     *dst = LE16(&(*src));
 }
@@ -255,7 +255,7 @@ void NMI_DoUpdates() {  // 8089e0
       } else if (vmain == 0x81) {
         // copy with other increment
         assert((len & 1) == 0);
-        le16 *dp = VramW(dst, (len >> 1) * 32);
+        le16 *dp = VramWS(dst, len >> 1, 32);
         for (int i = 0; i < len; i += 2, dp += 32)
           *dp = LE16(&(p[i]));
       } else {
@@ -294,7 +294,7 @@ void NMI_UpdateOWScroll() {  // 808d13
   int len = f & 0x3fff;
   src += 2;
   do {
-    le16 *dst = VramW(LE16(&(src[0])), (len >> 1) * step);
+    le16 *dst = VramWS(LE16(&(src[0])), len >> 1, step);
     src += 2;
     for (int i = 0, i_end = len >> 1; i < i_end; i++, dst += step, src += 2)
       *dst = LE16(&(*src));
@@ -435,7 +435,7 @@ void HandleStripes14(const uint8 *p) {  // 8092a1
       }
     } else {
       // increment vram by 32 instead of 1
-      le16 *dst = VramW(vmem_addr, ((len + 1) >> 1) * 32);
+      le16 *dst = VramWS(vmem_addr, (len + 1) >> 1, 32);
       if (is_memset) {
         uint16 v = p[0] | p[1] << 8;
         len = (len + 1) >> 1;

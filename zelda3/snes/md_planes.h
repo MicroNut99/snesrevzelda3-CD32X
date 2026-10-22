@@ -15,6 +15,20 @@
 // the most cells on screen get the lines; cells of the others (usually a few dozen) show the
 // blank tile on the Genesis and are drawn by the 32X instead, in their own colours (MdHybrid).
 //
+// "Flip" (MdHybrid.flip): a frame whose colour math only puts one layer - alone on the subscreen -
+// under the main screen's backdrop (black, fixed colour 0: the sum is that layer's colour as is).
+// The SNES picture is then that layer below everything else: BG1 under (flip 1) - plane A shows
+// BG2 and plane B BG1 (only the planes' addresses and scrolls change); BG2 under (flip 2) - the
+// planes as usual. The 32X draws all of its part in front, punched where the layer on top is
+// (Zelda's dungeons and overworld use this for their "BG1 under" rooms, the story for its
+// background). Plane B's cells must then all be low priority: a frame with a high cell of the
+// layer under on screen is not flipped.
+//
+// "Tint" (MdHybrid.tint): colour math with the fixed colour only (+ or -, halved or not; nothing on
+// the subscreen) makes each layer's colour a function of itself: the Genesis's lines and the 32X's
+// palette hold those colours (Zelda's darkened and flashing scenes, the story's dimmed pictures).
+// BG1 and BG2 share the Genesis's lines: both must take the math, or neither.
+//
 // An op: [control long: 2 words] [n] [n data words]; n = 0: the control's high word is a VDP
 // register write (0x8000 | reg << 8 | value).
 //
@@ -33,7 +47,8 @@ enum {
   kMd_TileBase = 0x2000,       // the SNES word address of Genesis tile 0
   kMd_PlaneA = 0x8000, kMd_PlaneB = 0xA000, kMd_HScroll = 0xC000, kMd_Sprites = 0xC400, kMd_Window = 0xD000,
   kMd_PlaneOff = 0xE000, kMd_BlankTile = 0x640,
-  kMd_CommitMax = 0x2600,      // words of ops one commit may hold (the 68000's queue: 0x2800)
+  kMd_CommitMax = 0x2600,      // words of ops one commit may hold (the 68000's queue: 0x2800); the
+                               // 68000's V-blank time is the tighter limit (md_planes.c: kMd_CostMax)
   kMd_OffMax = 192,            // BG1 / BG2 cells a frame the 32X draws (palette off the Genesis), per
                                // layer (the 13 recordings: at most 163, 99% of frames 75 or fewer)
 };
@@ -50,6 +65,7 @@ typedef struct MdSink {
   uint16 buf[512];
   int n;                       // words in buf
   int total;                   // words since the last commit
+  int cost;                    // the 68000's cycles to apply them (md_planes.c: OpCost)
   void (*flush)(struct MdSink *s);
 } MdSink;
 
@@ -62,8 +78,9 @@ typedef struct MdPlanes {
   uint8 cram_bright;
   uint16 vsram[2];             // A, B
   uint16 hscroll[2];           // A, B (full-screen mode)
-  uint8 plane_on;              // bit 0 plane A shows BG1, bit 1 plane B BG2 (else the empty plane)
+  uint8 plane_on;              // bit 0 BG1 shown, bit 1 BG2 (else the empty plane), bit 2 flipped
   uint8 cram_valid, scroll_valid;
+  uint8 small, small_send;     // the planes are 32x32 cells (both maps 32x32 on the SNES); to send
   uint8 tile_empty[512 / 8];   // SNES tiles 0-511 (at kMd_TileBase): every pixel 0
   uint32 tile_hash[512];       // the Genesis's tiles as sent (0: not yet)
   // BG3 (the 32X draws it): which tiles are empty, which map rows hold any other
@@ -78,7 +95,7 @@ typedef struct MdPlanes {
   // the screen's cells as last looked at: unchanged scroll, layers and maps (gen: bumped when a
   // cell or a tile's emptiness changes) - the counts and lists of last time still hold
   uint32 gen;
-  uint16 ckey[5]; uint32 cgen; uint32 ccount[8]; uint8 cvalid, chigh;
+  uint16 ckey[5]; uint32 cgen; uint32 ccount[8]; uint8 cvalid, chigh, cbg1hi;
   uint16 lkey[5]; uint32 lgen; uint8 lmd_pal, lvalid, lok;
 } MdPlanes;
 
@@ -89,8 +106,13 @@ typedef struct MdHybrid {
   uint8 off_base[8];           // palette p drawn by the 32X: the 32X CRAM index of its colour 0
   uint8 spr_slot[8];           // sprite palette 0-7 -> its behind-the-planes copy in CRAM 64 + 16 * slot (0xff none)
   uint16 sig_hs[2], sig_vs[2]; // BG1 / BG2 scroll as sent: every line must still have it
-  uint8 layers;                // BG1 / BG2 on the main screen (bits 0 / 1): the planes shown
+  uint8 layers;                // BG1 / BG2 on the Genesis (bits 0 / 1): the planes shown
+  uint8 tint;                  // the colour math is a function of each colour: 0x80 | the layers it
+                               // takes (CGADSUB bits), the fixed colour, bit 0 subtract / 1 halve
+  uint16 tint_c; uint8 tint_op;
+  uint8 flip;                  // 1: BG1 below everything (plane B, BG2 on A); 2: BG2 below (see "Flip")
   uint8 fb;                    // the 32X frame buffer drawn (0 / 1): its lines' spans (ppu.c)
+  uint8 small;                 // the BG1 / BG2 maps are 32x32 (the planes too)
   // BG3 (MdPlanes' own, unchanged while the frame is drawn):
   const uint8 *bg3_rows;       // the map rows (bit per row 0-63) with a tile that is not empty
   const uint32 (*bg3_cols)[2]; // per map row: its columns (bits 0-63) with a non-empty tile
@@ -103,6 +125,10 @@ typedef struct MdHybrid {
   uint16 cell[2][kMd_OffMax];  // the SNES map word
 } MdHybrid;
 
+uint8 MdPlanes_FlipOk(const Ppu *ppu);
+bool MdPlanes_TintOk(const Ppu *ppu, uint8 *me, uint16 *c, uint8 *op);   // see "Tint"
+uint16 MdPlanes_Tint(uint16 col, const MdHybrid *h);   // 0, or the layer under + 1 (see "Flip")
+uint32 MdPlanes_LayerCells(MdPlanes *m, Ppu *ppu, int layer);
 void MdPlanes_Reset(MdPlanes *m);
 // Once per drawn frame, before drawing: the frame's split (h). room: words the commit has left.
 void MdPlanes_Prepare(MdPlanes *m, Ppu *ppu, MdHybrid *h, int room);
@@ -110,7 +136,8 @@ void MdPlanes_Prepare(MdPlanes *m, Ppu *ppu, MdHybrid *h, int room);
 // ops for the Genesis, into the sink. If they did not fit after all, h->why is set: the frame
 // cannot be shown with the planes (its lines were drawn for them: draw it again, or drop it)
 void MdPlanes_Send(MdPlanes *m, Ppu *ppu, MdHybrid *h, MdSink *sink);
-// After drawing: which planes show (bits 0 / 1: BG1 / BG2; 0 for a frame the 32X drew whole);
+// After drawing: which planes show (bits 0 / 1: BG1 / BG2; 0 for a frame the 32X drew whole;
+// bit 2: flipped - h->layers | h->flip << 2);
 // then flush the sink - the frame's ops are complete, ready to commit
 void MdPlanes_Show(MdPlanes *m, uint32 layers, MdSink *sink);
 // BG3's map rows that hold a non-empty tile (h->bg3_rows): the 32X skips the others' lines

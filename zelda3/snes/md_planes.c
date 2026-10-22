@@ -4,6 +4,8 @@
 #include "src/types.h"
 
 extern uint8 g_vram_dirty[0x8000 / 16 / 8];   // src/zelda_rtl.c
+extern uint8 g_vram_fine[0x2000 / 8];
+void ZeldaVramDirtyStride(uint32 addr, uint32 nwords, uint32 step);
 #if defined(Z32X) && defined(Z32_MD_PROF)        // test: FRT ticks per stage (g_md_prof)
 extern "C" uint16 z32_frt(void);
 uint32 g_md_prof[8];
@@ -26,7 +28,15 @@ enum {
 static const uint8 kBit8[8] = { 1, 2, 4, 8, 16, 32, 64, 128 };
 static inline bool BlockDirty(uint32 b) { return (g_vram_dirty[b >> 3] & kBit8[b & 7]) != 0; }
 static inline void BlockClean(uint32 b) { g_vram_dirty[b >> 3] &= (uint8)~kBit8[b & 7]; }
-static inline void BlockMark(uint32 b) { g_vram_dirty[b >> 3] |= kBit8[b & 7]; }
+static inline void BlockMark(uint32 b) {
+  g_vram_dirty[b >> 3] |= kBit8[b & 7];
+  if (b < kBlk_Tiles) g_vram_fine[b * 2] = g_vram_fine[b * 2 + 1] = 0xff;   // a map block: all of it
+}
+// a map block's dirty words (bit k: word b * 16 + k); none marked (some path set only the block): all
+static inline uint32 BlockWords(uint32 b) {
+  uint32 w = g_vram_fine[b * 2] | g_vram_fine[b * 2 + 1] << 8;
+  return w ? w : 0xffff;
+}
 static inline bool Bit(const uint8 *a, uint32 i) { return (a[i >> 3] & kBit8[i & 7]) != 0; }
 
 void MdPlanes_Reset(MdPlanes *m) {
@@ -127,6 +137,14 @@ uint16 MdPlanes_Colour(uint16 c, uint8 brightness) {
 }
 
 // ---- ops into the sink; a write that continues the last one (the next address) joins it ----
+// The 68000's time for a commit (cart/cart_md.s: an op of 16 words or more goes by DMA): what
+// fits in one V-blank with the pad, the FM music and the CD's interrupt besides (about 18000
+// 68000 cycles from the V-int to the display; ~14000 left). Ops past it stay dirty.
+enum { kMd_OpCost = 90, kMd_WordCpu = 22, kMd_WordDma = 6, kMd_DmaMin = 16, kMd_CostMax = 14000 };
+static inline uint32 OpCost(uint32 n) {
+  return kMd_OpCost + (n >= kMd_DmaMin ? 200 + n * kMd_WordDma : n * kMd_WordCpu);
+}
+
 typedef struct Ops {
   MdSink *s;
   bool full;                   // the commit is full: what is left waits for the next frame
@@ -145,7 +163,11 @@ static void Flush(Ops *o) {
 static uint16 *OpBegin(Ops *o, uint32 ctrl, uint32 a, uint32 n) {
   MdSink *s = o->s;
   if (o->full || s->total + 3 + (int)n > kMd_CommitMax) { o->full = true; return NULL; }
-  if (a != ~0u && o->last >= 0 && o->last_end == a && s->n + (int)n <= (int)countof(s->buf)) {
+  bool join = a != ~0u && o->last >= 0 && o->last_end == a && s->n + (int)n <= (int)countof(s->buf);
+  int c = join ? (int)(OpCost(s->buf[o->last + 2] + n) - OpCost(s->buf[o->last + 2])) : (int)OpCost(n);
+  if (s->cost + c > kMd_CostMax) { o->full = true; return NULL; }
+  s->cost += c;
+  if (join) {
     s->buf[o->last + 2] += (uint16)n;          // continues the last write
     uint16 *d = s->buf + s->n;
     s->n += n, s->total += n, o->last_end += n * 2;
@@ -161,6 +183,7 @@ static uint16 *OpBegin(Ops *o, uint32 ctrl, uint32 a, uint32 n) {
 // take back the n words just begun (they were the same as what the Genesis has)
 static void OpCancel(Ops *o, uint16 *d, uint32 n) {
   MdSink *s = o->s;
+  s->cost -= (int)n * kMd_WordCpu;             // (about: an op of its own cost more)
   if (o->last >= 0 && d == s->buf + o->last + 3) {   // it was an op of its own
     s->n -= 3 + n, s->total -= 3 + n, o->last = -1;
   } else {                                           // it joined the last one
@@ -203,14 +226,38 @@ static inline uint16 MdCell(const MdPlanes *m, uint32 e) {
   if (l == 0xff) return kMd_BlankTile;
   return (uint16)((e >> 13 & 1) << 15 | l << 13 | (e >> 15 & 1) << 12 | (e >> 14 & 1) << 11 | (e & 0x3ff));
 }
-// SNES map word offset (0..0xfff in a 64x64 map) -> the plane cell's byte offset
+// SNES map word offset (0..0xfff in a 64x64 map) -> the plane cell's byte offset; 32x32 maps
+// (m->small: a 32x32 plane) only have 0..0x3ff, the same layout
 static inline uint32 MdCellOffset(uint32 o) {
   uint32 q = o >> 10, r = o >> 5 & 31, c = o & 31;
   return ((r + (q >> 1) * 32) * 64 + c + (q & 1) * 32) * 2;
 }
+static inline uint32 MdCellOffsetM(const MdPlanes *m, uint32 o) { return m->small ? o * 2 : MdCellOffset(o); }
 
-// the dirty blocks of the copied regions as ops, what changed (as many as fit; the rest stay dirty)
+// a column of plane cells: n cells from Genesis address a down (the VRAM increment 128 for it)
+static bool ColumnOp(MdPlanes *m, Ops *o, uint32 a, const uint16 *cells, uint32 n) {
+  MdSink *s = o->s;
+  uint32 cost = 2 * OpCost(0) + OpCost(n);
+  if (o->full || s->total + 9 + (int)n > kMd_CommitMax || s->cost + cost > kMd_CostMax) { o->full = true; return false; }
+  OpReg(o, 15, m->small ? 0x40 : 0x80);       // a row of the plane
+  uint16 *d = OpBegin(o, VramWrite(a), ~0u, n);
+  for (uint32 k = 0; k < n; k++) d[k] = MdCell(m, cells[k]);
+  OpReg(o, 15, 2);
+  return true;
+}
+
+// the SNES map word shown by Genesis cell (row, col) of a plane (64x64; a 32x32 plane: the same
+// formula, rows and columns below 32)
+static inline uint32 MapWordOf(uint32 base, uint32 r, uint32 col) {
+  return base + ((r >> 5) * 2 + (col >> 5)) * 0x400 + (r & 31) * 32 + (col & 31);
+}
+
+// the dirty blocks of the copied regions as ops, what changed (as many as fit; the rest stay dirty).
+// Map words: runs along a row; a block with one or two words (a column the game wrote, every
+// 32nd word) gives its words to columns - sent down the plane, one op each.
+static uint32 g_md_col[2][64][2];                // [plane][Genesis column]: rows 0-31, 32-63 dirty
 static void SendDirty(MdPlanes *m, Ppu *ppu, Ops *o) {
+  bool cols = false;
   for (uint32 b = kBlk_MapB; b < kBlk_End && !o->full; b++) {
     if (!g_vram_dirty[b >> 3]) { b |= 7; continue; }   // a clean byte: its 8 blocks
     if (!BlockDirty(b)) continue;
@@ -225,24 +272,108 @@ static void SendDirty(MdPlanes *m, Ppu *ppu, Ops *o) {
     } else {
       uint32 base = b < kBlk_MapA ? 0 : 0x1000, plane = b < kBlk_MapA ? kMd_PlaneB : kMd_PlaneA;
       uint32 o0 = (b - (base >> 4)) * 16;      // word offset in the map: 16 cells of one row
-      uint32 a = plane + MdCellOffset(o0);
-      uint16 *d = OpBegin(o, VramWrite(a), a, 16);
-      if (!d) break;
+      if (m->small && o0 >= 0x400) {           // a 32x32 plane: not shown
+        g_vram_fine[b * 2] = g_vram_fine[b * 2 + 1] = 0;
+        BlockClean(b);
+        continue;
+      }
       const uint8 *v = (const uint8 *)ppu->vram + (base + o0) * 2;
-      for (uint32 k = 0; k < 16; k++) d[k] = MdCell(m, v[k * 2] | v[k * 2 + 1] << 8);
+      uint32 w = BlockWords(b), nw = 0;
+      for (uint32 k = 0; k < 16; k++) nw += (w >> k) & 1;
+      if (nw <= 2) {                           // to the columns
+        uint32 pl = b < kBlk_MapA ? 1 : 0, g = MdCellOffsetM(m, o0) >> 1;   // its first cell: row * width + col
+        for (uint32 k = 0; k < 16; k++) {
+          if (!((w >> k) & 1)) continue;
+          uint32 gc = g + k, col = m->small ? gc & 31 : gc & 63, row = m->small ? gc >> 5 : gc >> 6;
+          g_md_col[pl][col][row >> 5] |= 1u << (row & 31);
+        }
+        cols = true;
+      } else {
+        for (uint32 k = 0; k < 16;) {
+          if (!((w >> k) & 1)) { k++; continue; }
+          uint32 j = k;
+          while (j < 16 && ((w >> j) & 1)) j++;
+          uint32 a = plane + MdCellOffsetM(m, o0) + k * 2;
+          uint16 *d = OpBegin(o, VramWrite(a), a, j - k);
+          if (!d) break;
+          for (uint32 i = k; i < j; i++) d[i - k] = MdCell(m, v[i * 2] | v[i * 2 + 1] << 8);
+          k = j;
+        }
+        if (o->full) break;
+      }
+      g_vram_fine[b * 2] = g_vram_fine[b * 2 + 1] = 0;
     }
     BlockClean(b);
+  }
+  if (!cols) return;
+  // the columns: runs of rows; what does not fit goes back to dirty
+  for (uint32 pl = 0; pl < 2; pl++) {
+    uint32 base = pl ? 0 : 0x1000, plane = pl ? kMd_PlaneB : kMd_PlaneA;
+    for (uint32 col = 0; col < 64; col++) {
+      uint32 *cb = g_md_col[pl][col];
+      if (!(cb[0] | cb[1])) continue;
+      for (uint32 row = 0; row < 64;) {
+        if (!((cb[row >> 5] >> (row & 31)) & 1)) { row++; continue; }
+        uint32 r1 = row;
+        while (r1 < 64 && ((cb[r1 >> 5] >> (r1 & 31)) & 1)) r1++;
+        uint16 cells[64];
+        for (uint32 r = row; r < r1; r++)      // the SNES map word of Genesis cell (r, col)
+          cells[r - row] = ppu->vram[MapWordOf(base, r, col)];
+        bool sent;
+        uint32 a = plane + (row * (m->small ? 32 : 64) + col) * 2;
+        if (r1 - row == 1) {
+          uint16 *d = OpBegin(o, VramWrite(a), ~0u, 1);
+          if ((sent = d != NULL)) d[0] = MdCell(m, cells[0]);
+        } else {
+          sent = ColumnOp(m, o, a, cells, r1 - row);
+        }
+        if (!sent) {                           // the rest of the columns: dirty again
+          for (uint32 r = row; r < 64; r++) {
+            if (!((cb[r >> 5] >> (r & 31)) & 1)) continue;
+            ZeldaVramDirtyStride(MapWordOf(base, r, col), 1, 2);
+          }
+          cb[0] = cb[1] = 0;
+          for (uint32 c2 = col + 1; c2 < 64; c2++) {
+            uint32 *cc = g_md_col[pl][c2];
+            for (uint32 r = 0; r < 64; r++) {
+              if (!((cc[r >> 5] >> (r & 31)) & 1)) continue;
+              ZeldaVramDirtyStride(MapWordOf(base, r, c2), 1, 2);
+            }
+            cc[0] = cc[1] = 0;
+          }
+          if (pl == 0) {                         // and the other plane's
+            for (uint32 c2 = 0; c2 < 64; c2++) {
+              uint32 *cc = g_md_col[1][c2];
+              for (uint32 r = 0; r < 64; r++) {
+                if (!((cc[r >> 5] >> (r & 31)) & 1)) continue;
+                ZeldaVramDirtyStride(MapWordOf(0, r, c2), 1, 2);
+              }
+              cc[0] = cc[1] = 0;
+            }
+          }
+          return;
+        }
+        row = r1;
+      }
+      cb[0] = cb[1] = 0;
+    }
   }
 }
 
 // before the frame is drawn, without sending: the emptiness of the tiles written since (the
 // screen's palettes depend on it), gen bumped for a map written; the words the sending will take
 static uint32 Peek(MdPlanes *m, Ppu *ppu, bool look) {
-  uint32 n = 0;
+  uint32 n = 0;                                // the 68000's cycles (OpCost), about
   for (uint32 b = kBlk_MapB; b < kBlk_End; b++) {
     if (!g_vram_dirty[b >> 3]) { b |= 7; continue; }
     if (!BlockDirty(b)) continue;
-    n += 19;
+    if (b < kBlk_Tiles) {
+      uint32 w = BlockWords(b), nw = 0;
+      for (uint32 k = 0; k < 16; k++) nw += (w >> k) & 1;
+      n += nw <= 2 ? nw * 40 : OpCost(nw);    // in a column: ~40 a cell
+    } else {
+      n += 16 * kMd_WordDma + 30;              // tiles: runs of them, by DMA
+    }
     if (!look) continue;
     if (b < kBlk_Tiles) { m->gen++; continue; }
     uint32 t = b - kBlk_Tiles;
@@ -266,41 +397,66 @@ static void MarkPalette(Ppu *ppu, uint32 p) {
 }
 
 // the cells a layer shows: per palette, how many (non-empty tiles); -1: a tile past 511 shows
-static bool CountPalettes(MdPlanes *m, Ppu *ppu, int layer, uint32 *count) {
+static bool CountPalettes(MdPlanes *m, Ppu *ppu, int layer, uint32 *count, uint8 *any_high) {
+  const uint32 mk = m->small ? 31 : 63;        // 32x32 maps: one screen, the cells wrap
   const BgLayer *bg = &ppu->bgLayer[layer];
   uint32 base = layer == 0 ? 0x1000 : 0x0000;
   uint32 y0 = (bg->vScroll + 1) & 0x1ff, x0 = bg->hScroll & 0x1ff;
   uint32 nrows = ((y0 & 7) + 224 + 7) >> 3, ncols = ((x0 & 7) + 256 + 7) >> 3;
   const uint8 *v = (const uint8 *)ppu->vram;
   for (uint32 ry = 0; ry < nrows; ry++) {
-    uint32 cy = ((y0 >> 3) + ry) & 63;
+    uint32 cy = ((y0 >> 3) + ry) & mk;
     const uint8 *row = v + (base + (cy >> 5) * 0x800 + (cy & 31) * 32) * 2;
-    for (uint32 rx = 0, cx = x0 >> 3; rx < ncols; rx++, cx = (cx + 1) & 63) {
+    for (uint32 rx = 0, cx = (x0 >> 3) & mk; rx < ncols; rx++, cx = (cx + 1) & mk) {
       const uint8 *c = row + ((cx >> 5) * 0x400 + (cx & 31)) * 2;
       uint32 t = c[0] | (c[1] & 3) << 8;
       if (t >= 512) return false;
-      if (!Bit(m->tile_empty, t))
+      if (!Bit(m->tile_empty, t)) {
         count[c[1] >> 2 & 7]++;
+        if (any_high && (c[1] & 0x20)) *any_high = 1;
+      }
     }
   }
   return true;
 }
 
+// the cells a layer shows that are not empty (a tile >= 512 counts as not empty)
+uint32 MdPlanes_LayerCells(MdPlanes *m, Ppu *ppu, int layer) {
+  const uint32 mk = m->small ? 31 : 63;        // 32x32 maps: one screen, the cells wrap
+  const BgLayer *bg = &ppu->bgLayer[layer];
+  uint32 base = layer == 0 ? 0x1000 : 0x0000;
+  uint32 y0 = (bg->vScroll + 1) & 0x1ff, x0 = bg->hScroll & 0x1ff;
+  uint32 nrows = ((y0 & 7) + 224 + 7) >> 3, ncols = ((x0 & 7) + 256 + 7) >> 3, n = 0;
+  const uint8 *v = (const uint8 *)ppu->vram;
+  for (uint32 ry = 0; ry < nrows; ry++) {
+    uint32 cy = ((y0 >> 3) + ry) & mk;
+    const uint8 *row = v + (base + (cy >> 5) * 0x800 + (cy & 31) * 32) * 2;
+    for (uint32 rx = 0, cx = (x0 >> 3) & mk; rx < ncols; rx++, cx = (cx + 1) & mk) {
+      const uint8 *c = row + ((cx >> 5) * 0x400 + (cx & 31)) * 2;
+      uint32 t = c[0] | (c[1] & 3) << 8;
+      if (t >= 512 || !Bit(m->tile_empty, t)) n++;
+    }
+  }
+  return n;
+}
+
 // the cells of palettes off the Genesis a layer shows, by map row (MdHybrid), or false: too many
 static bool ListOffCells(MdPlanes *m, Ppu *ppu, int layer, MdHybrid *h) {
+  const uint32 mk = m->small ? 31 : 63;        // 32x32 maps: one screen, the cells wrap
   const BgLayer *bg = &ppu->bgLayer[layer];
   uint32 base = layer == 0 ? 0x1000 : 0x0000;
   uint32 y0 = (bg->vScroll + 1) & 0x1ff, x0 = bg->hScroll & 0x1ff;
   uint32 nrows = ((y0 & 7) + 224 + 7) >> 3, ncols = ((x0 & 7) + 256 + 7) >> 3;
   int li = layer;
-  h->row0[li] = (uint8)((y0 >> 3) & 63), h->nrows[li] = (uint8)nrows;
+  if (m->small && ncols > 32) ncols = 32;      // each cell once (ppu.c draws it at both edges)
+  h->row0[li] = (uint8)((y0 >> 3) & mk), h->nrows[li] = (uint8)nrows;
   uint32 n = 0;
   const uint8 *v = (const uint8 *)ppu->vram;
   for (uint32 ry = 0; ry < nrows; ry++) {
     h->start[li][ry] = (uint16)n;
-    uint32 cy = ((y0 >> 3) + ry) & 63;
+    uint32 cy = ((y0 >> 3) + ry) & mk;
     const uint8 *row = v + (base + (cy >> 5) * 0x800 + (cy & 31) * 32) * 2;
-    for (uint32 rx = 0, cx = x0 >> 3; rx < ncols; rx++, cx = (cx + 1) & 63) {
+    for (uint32 rx = 0, cx = (x0 >> 3) & mk; rx < ncols; rx++, cx = (cx + 1) & mk) {
       const uint8 *c = row + ((cx >> 5) * 0x400 + (cx & 31)) * 2;
       uint32 e = c[0] | c[1] << 8;
       uint32 t = e & 0x3ff;
@@ -323,27 +479,77 @@ static bool MathMayShow(Ppu *ppu) {
   return fixed != 0 || ppu->halfColor || (ppu->addSubscreen && ppu->screenEnabled[1] != 0);
 }
 
+// "Flip" (md_planes.h): the colour math shows nothing but BG1 under the main screen
+uint8 MdPlanes_FlipOk(const Ppu *ppu) {       // 0: no; 1: BG1 under; 2: BG2 under
+  uint32 ms = ppu->screenEnabled[0], ss = ppu->screenEnabled[1] & 0x1f;
+  if (!(ppu->clipMode == 0 && ppu->preventMathMode == 0 && (ppu->mathEnabled & 0x20) &&
+        !(ppu->mathEnabled & ms & 0x1f) && ppu->addSubscreen && !ppu->subtractColor && !ppu->halfColor &&
+        (ppu->fixedColorR | ppu->fixedColorG | ppu->fixedColorB) == 0 && ppu->cgram[0] == 0))
+    return 0;
+  if (ss == 1 && !(ms & 1) && !((ppu->screenWindowed[1] & 1) && (ppu->windowsel & 0x0a))) return 1;
+  if (ss == 2 && !(ms & 2) && !((ppu->screenWindowed[1] & 2) && (ppu->windowsel & 0xa0))) return 2;
+  return 0;
+}
+
+// "Tint" (md_planes.h): the colour math is the fixed colour only (nothing on the subscreen): each
+// layer's colours are a function of themselves. 0: not so; else the MdHybrid fields
+bool MdPlanes_TintOk(const Ppu *ppu, uint8 *me, uint16 *c, uint8 *op) {
+  if (ppu->clipMode != 0 || ppu->preventMathMode != 0 || (ppu->addSubscreen && (ppu->screenEnabled[1] & 0x1f)))
+    return false;
+  uint32 e = ppu->mathEnabled & 0x3f;
+  if ((ppu->screenEnabled[0] & 3) == 3 && ((e ^ e >> 1) & 1))
+    return false;                               // BG1 and BG2 share the Genesis's lines
+  *me = (uint8)(e | 0x80);
+  *c = (uint16)(ppu->fixedColorR | ppu->fixedColorG << 5 | ppu->fixedColorB << 10);
+  *op = (uint8)(ppu->subtractColor | (ppu->halfColor && !ppu->addSubscreen) << 1);
+  return true;
+}
+// a colour as the tint makes it (as PpuPaintLine: + or - the fixed colour, halved, at most 31)
+uint16 MdPlanes_Tint(uint16 col, const MdHybrid *h) {
+  uint32 out = 0;
+  for (uint32 sh = 0; sh < 15; sh += 5) {
+    int a = col >> sh & 31, b = h->tint_c >> sh & 31;
+    a = (h->tint_op & 1) ? (a >= b ? a - b : 0) : a + b;
+    if (h->tint_op & 2) a >>= 1;
+    out |= (uint32)(a > 31 ? 31 : a) << sh;
+  }
+  return (uint16)out;
+}
+
 void MdPlanes_Prepare(MdPlanes *m, Ppu *ppu, MdHybrid *h, int room) {
   MD_T0;
   h->why = 0, h->md_pal = 0;
   memset(h->off_base, 0, sizeof h->off_base);
   memset(h->spr_slot, 0xff, sizeof h->spr_slot);
+  const BgLayer *l1 = &ppu->bgLayer[0], *l2 = &ppu->bgLayer[1];
+  int small = (!l1->tilemapWider && !l1->tilemapHigher && !l2->tilemapWider && !l2->tilemapHigher) ? 1 :
+              (l1->tilemapWider && l1->tilemapHigher && l2->tilemapWider && l2->tilemapHigher) ? 0 : -1;
+  if (small >= 0 && small != m->small && ppu->mode == 1 && l1->tilemapAdr == 0x1000 && l2->tilemapAdr == 0) {
+    m->small = (uint8)small, m->small_send = 1;  // the planes' size changes: all of the maps again
+    for (uint32 b = kBlk_MapB; b < kBlk_Tiles; b++) BlockMark(b);
+    m->gen++, m->cvalid = m->lvalid = 0, m->scroll_valid = 0;
+  }
+  h->small = m->small;
   uint32 words = Peek(m, ppu, true);
   MD_T(0);
   // the decision
   uint8 why = 0;
   const BgLayer *b1 = &ppu->bgLayer[0], *b2 = &ppu->bgLayer[1];
   uint32 layers = ppu->screenEnabled[0] & 3;
-  h->layers = (uint8)layers;
+  uint8 flip = 0;
+  h->tint = 0;
   if (ppu->forcedBlank || ppu->brightness == 0) why = kMdWhy_Blank;
   else if (ppu->mode != 1) why = kMdWhy_Mode;
-  else if (b1->tilemapAdr != 0x1000 || b2->tilemapAdr != 0x0000 || !b1->tilemapWider || !b1->tilemapHigher ||
-           !b2->tilemapWider || !b2->tilemapHigher || b1->tileAdr != kMd_TileBase || b2->tileAdr != kMd_TileBase)
+  else if (b1->tilemapAdr != 0x1000 || b2->tilemapAdr != 0x0000 || small != (int)m->small ||
+           b1->tileAdr != kMd_TileBase || b2->tileAdr != kMd_TileBase)
     why = kMdWhy_Layout;
   else if (ppu->mosaicEnabled & 7) why = kMdWhy_Mosaic;   // (BG3 too: the 32X draws it unmosaicked)
   else if ((ppu->screenWindowed[0] & 3) && (ppu->windowsel & 0xaa)) why = kMdWhy_Window;
-  else if (MathMayShow(ppu)) why = kMdWhy_Math;
-  else if ((int)words + 160 > room) why = kMdWhy_NotSynced;   // (+ the colours, scroll, planes)
+  else if (MathMayShow(ppu) && !(flip = MdPlanes_FlipOk(ppu)) && !MdPlanes_TintOk(ppu, &h->tint, &h->tint_c, &h->tint_op))
+    why = kMdWhy_Math;
+  else if ((int)words + 1200 > kMd_CostMax || room < 1200) why = kMdWhy_NotSynced;   // (+ the colours, scroll, planes)
+  if (flip) layers |= flip;                    // the layer under: from the subscreen
+  h->layers = (uint8)layers, h->flip = flip;
   uint32 count[8] = { 0 };
   uint16 key[5] = { b1->hScroll, b1->vScroll, b2->hScroll, b2->vScroll, (uint16)layers };
   if (!why) {
@@ -352,16 +558,18 @@ void MdPlanes_Prepare(MdPlanes *m, Ppu *ppu, MdHybrid *h, int room) {
       if (m->chigh) why = kMdWhy_HighTiles;
     } else {
       bool high = false;
+      uint8 hi[2] = { 0, 0 };
       for (int l = 0; l < 2 && !high; l++)
-        if ((layers >> l & 1) && !CountPalettes(m, ppu, l, count)) high = true;
+        if ((layers >> l & 1) && !CountPalettes(m, ppu, l, count, &hi[l])) high = true;
       memcpy(m->ccount, count, sizeof count), memcpy(m->ckey, key, sizeof key);
-      m->cgen = m->gen, m->cvalid = 1, m->chigh = high;
+      m->cgen = m->gen, m->cvalid = 1, m->chigh = high, m->cbg1hi = hi[0] | hi[1] << 1;
       if (high) why = kMdWhy_HighTiles;
     }
+    if (!why && flip && (m->cbg1hi & flip)) why = kMdWhy_Math;   // a high cell under: plane B would cover A
   }
   MD_T(1);
   int groups = 0;
-  if (!why) {                                  // the sprites behind the planes: their palettes
+  if (!why && !flip) {                         // the sprites behind the planes: their palettes
     for (int i = 0; i < ppu->objCount; i++) {
       uint32 k = ppu->objList[i];
       uint32 attr = (uint32)ppu->oam[k * 2 + 1] >> 8;
@@ -416,7 +624,7 @@ void MdPlanes_Prepare(MdPlanes *m, Ppu *ppu, MdHybrid *h, int room) {
     h->md_pal = (uint8)md;
   }
   MD_T(2);
-  if (!why && (int)Peek(m, ppu, false) + 160 > room)   // with the cells that changed line
+  if (!why && (int)Peek(m, ppu, false) + 1200 > kMd_CostMax)   // with the cells that changed line
     why = kMdWhy_NotSynced;
   MD_T(3);
   uint32 used = 0;
@@ -449,6 +657,10 @@ void MdPlanes_Send(MdPlanes *m, Ppu *ppu, MdHybrid *h, MdSink *sink) {
   MD_T0;
   InitExpand();
   Ops o = { sink, false, -1, 0 };
+  if (m->small_send) {                          // the planes' size (before the cells for it)
+    OpReg(&o, 16, m->small ? 0x00 : 0x11);
+    if (!o.full) m->small_send = 0;
+  }
   SendDirty(m, ppu, &o);
   const BgLayer *b1 = &ppu->bgLayer[0], *b2 = &ppu->bgLayer[1];
   if (!h->why && !o.full) {
@@ -458,6 +670,11 @@ void MdPlanes_Send(MdPlanes *m, Ppu *ppu, MdHybrid *h, MdSink *sink) {
       uint32 p = m->pal_of_line[l];
       src[l * 16] = l == 0 ? ppu->cgram[0] : 0;
       for (int j = 1; j < 16; j++) src[l * 16 + j] = p == 0xff ? 0 : ppu->cgram[p * 16 + j];
+    }
+    if (h->tint) {                              // the colour math's colours (see "Tint")
+      uint32 bg = (h->layers & 1) ? h->tint & 1 : h->tint >> 1 & 1;
+      if (h->tint & 0x20) src[0] = MdPlanes_Tint(src[0], h);
+      if (bg) for (int i = 0; i < 64; i++) if (i & 15) src[i] = MdPlanes_Tint(src[i], h);
     }
     bool same = m->cram_valid && m->cram_bright == ppu->brightness && !memcmp(src, m->cram_src, sizeof src);
     if (!same) {
@@ -469,8 +686,9 @@ void MdPlanes_Send(MdPlanes *m, Ppu *ppu, MdHybrid *h, MdSink *sink) {
       if (d) { memcpy(d, cram, sizeof cram); memcpy(m->cram, cram, sizeof cram); m->cram_valid = 1; }
     }
     // scroll: the SNES's line 1 shows map row vScroll + 1; the picture is 32 pixels in
-    uint16 vs[2] = { (uint16)((b1->vScroll + 1) & 0x3ff), (uint16)((b2->vScroll + 1) & 0x3ff) };
-    uint16 hs[2] = { (uint16)((32 - b1->hScroll) & 0x3ff), (uint16)((32 - b2->hScroll) & 0x3ff) };
+    const BgLayer *ba = h->flip == 1 ? b2 : b1, *bb = h->flip == 1 ? b1 : b2;   // planes A, B
+    uint16 vs[2] = { (uint16)((ba->vScroll + 1) & 0x3ff), (uint16)((bb->vScroll + 1) & 0x3ff) };
+    uint16 hs[2] = { (uint16)((32 - ba->hScroll) & 0x3ff), (uint16)((32 - bb->hScroll) & 0x3ff) };
     if (!m->scroll_valid || memcmp(vs, m->vsram, 4) || memcmp(hs, m->hscroll, 4)) {
       uint16 *d = OpBegin(&o, VsramWrite(0), ~0u, 2);
       if (d) { d[0] = vs[0], d[1] = vs[1]; }
@@ -489,10 +707,12 @@ void MdPlanes_Send(MdPlanes *m, Ppu *ppu, MdHybrid *h, MdSink *sink) {
 void MdPlanes_Show(MdPlanes *m, uint32 layers, MdSink *sink) {
   Ops o = { sink, false, -1, 0 };
   if (layers != m->plane_on) {                 // always room: the commit limit leaves it
-    sink->total -= 6;
-    OpReg(&o, 2, (layers & 1 ? kMd_PlaneA : kMd_PlaneOff) >> 10);
-    OpReg(&o, 4, (layers & 2 ? kMd_PlaneB : kMd_PlaneOff) >> 13);
-    sink->total += 6;
+    sink->total -= 6, sink->cost -= 2 * (int)OpCost(0);
+    uint32 a = layers & 1 ? kMd_PlaneA : kMd_PlaneOff, b = layers & 2 ? kMd_PlaneB : kMd_PlaneOff;
+    if (layers & 4) { uint32 t = a; a = b, b = t; }   // flipped: A shows BG2, B BG1
+    OpReg(&o, 2, a >> 10);
+    OpReg(&o, 4, b >> 13);
+    sink->total += 6, sink->cost += 2 * (int)OpCost(0);
     m->plane_on = (uint8)layers;
   }
   Flush(&o);
@@ -505,15 +725,19 @@ static inline uint16 Front(uint16 c, const uint8 *m) {
 void MdPlanes_Palette32x(const MdHybrid *h, const uint16 *cgram, uint8 brightness, uint16 *out) {
   uint8 lv[32];
   for (int i = 0; i < 32; i++) lv[i] = (uint8)(i * brightness / 15);
-  out[0] = (uint16)(Front(cgram[0], lv) | 0x8000);     // behind: the Genesis shows where it has a pixel
-  for (int i = 1; i < 32; i++) out[i] = Front(cgram[i], lv), out[32 + i] = (uint16)(out[i] | 0x8000);
+  // the colour math's colours (see "Tint"): per layer - the backdrop, BG3, BG1 / BG2, sprites 4-7
+  uint32 t = h->tint, tbg = !t ? 0 : (h->layers & 1) ? t & 1 : t >> 1 & 1;
+#define TC(c, on) ((on) ? MdPlanes_Tint((c), h) : (c))
+  out[0] = (uint16)(Front(TC(cgram[0], t & 0x20), lv) | 0x8000);   // behind: the Genesis shows where it has a pixel
+  for (int i = 1; i < 32; i++) out[i] = Front(TC(cgram[i], t & 4), lv), out[32 + i] = (uint16)(out[i] | 0x8000);
   out[32] = 0x0400;                                     // the side borders: black, in front
   for (int i = 64; i < 128; i++) out[i] = 0x8400;
   for (int p = 0; p < 8; p++) {
     if (h->spr_slot[p] != 0xff)                         // sprites 0 / 1: behind the planes
-      for (int j = 0; j < 16; j++) out[64 + h->spr_slot[p] * 16 + j] = (uint16)(Front(cgram[128 + p * 16 + j], lv) | 0x8000);
+      for (int j = 0; j < 16; j++) out[64 + h->spr_slot[p] * 16 + j] = (uint16)(Front(TC(cgram[128 + p * 16 + j], p >= 4 && (t & 0x10)), lv) | 0x8000);
     if (h->off_base[p])                                 // BG1 / BG2 cells the 32X draws: in front
-      for (int j = 1; j < 16; j++) out[h->off_base[p] + j] = Front(cgram[p * 16 + j], lv);
+      for (int j = 1; j < 16; j++) out[h->off_base[p] + j] = Front(TC(cgram[p * 16 + j], tbg), lv);
   }
-  for (int i = 128; i < 256; i++) out[i] = Front(cgram[i], lv);
+  for (int i = 128; i < 256; i++) out[i] = Front(TC(cgram[i], i >= 192 && (t & 0x10)), lv);
+#undef TC
 }

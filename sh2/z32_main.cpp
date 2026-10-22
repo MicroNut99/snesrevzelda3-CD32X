@@ -329,7 +329,7 @@ static void md_flush(MdSink *k) {
   z32_stats.ops_words += n;
   z32_ops_t += (uint16)(frt() - t0);
 }
-static MdSink z32_sink = { {0}, 0, 0, md_flush };
+static MdSink z32_sink = { {0}, 0, 0, 0, md_flush };
 
 /* the picture: two SH2s, master lines 0..split-1, slave split..; the split balanced each frame.
  * false: a line of a Genesis-planes frame could not be shown so (MdHybrid) - nothing to swap,
@@ -396,7 +396,7 @@ static bool draw_frame(void) {
     shown = false;
     z32_stats.hybrid_fail++;
   } else {
-    MdPlanes_Show(&z32_md, l == 2 ? z32_hybrid.layers : 0, &z32_sink);
+    MdPlanes_Show(&z32_md, l == 2 ? (z32_hybrid.layers | (z32_hybrid.flip == 1) << 2) : 0, &z32_sink);
     z32_stats.hybrid += l == 2;
   }
   z32_stats.ops_ticks += z32_ops_t;
@@ -445,7 +445,7 @@ static void request_swap(void) {
 #ifdef Z32_MD
   COMM0 = 71;                                    /* commit */
   for (uint32 n = 0; n < 4000000 && COMM0 != 0; n++) comm_pause();
-  z32_sink.total = 0;                            /* the next commit's room */
+  z32_sink.total = 0, z32_sink.cost = 0;                            /* the next commit's room */
 #endif
   while (VDP_FBCTL & 0x8000) { }                 /* not in a V-blank: the swap waits for the next */
   z32_swap_cur = VDP_FBCTL & 1;
@@ -465,7 +465,7 @@ static void swap_pictures(void) {
   uint16_t cur = VDP_FBCTL & 1;
   VDP_FBCTL = (uint16_t)(cur ^ 1);
   while ((VDP_FBCTL & 1) == cur) { }
-  z32_sink.total = 0;                            /* the next commit's room */
+  z32_sink.total = 0, z32_sink.cost = 0;                            /* the next commit's room */
 #else
   flip();
 #endif
@@ -493,6 +493,7 @@ int main(void) {
   load_assets();
   ZeldaInitialize();
   g_zenv.ppu->extraLeftRight = 0;
+  ZeldaSetLanguage(NULL);                        /* the game's text (main.c does this on the PC; without it every message is empty) */
   COMM12 = 2;
 #ifdef Z32_PLAY
   ZeldaReadSram();                               /* the save file from the cartridge (z32_save.cpp) */

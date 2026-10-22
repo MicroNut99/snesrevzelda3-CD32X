@@ -315,17 +315,29 @@ static void ZeldaRunGameLoop() {
 }
 
 uint8 g_vram_dirty[0x8000 / 16 / 8];
+uint8 g_vram_fine[0x2000 / 8];
 void ZeldaVramDirty(uint32 addr, uint32 nwords) {
   if (!nwords)
     return;
   uint32 b = (addr & 0x7fff) >> 4, e = ((addr & 0x7fff) + nwords - 1) >> 4;
   if (e - b >= 0x800 - 1 || nwords > 0x8000) {   // the whole VRAM (or a wrap past its end)
     memset(g_vram_dirty, 0xff, sizeof g_vram_dirty);
+    memset(g_vram_fine, 0xff, sizeof g_vram_fine);
     return;
   }
   for (; b <= e; b++) {
     uint32 k = b & 0x7ff;
     g_vram_dirty[k >> 3] |= (uint8)(1 << (k & 7));
+    if (k < 0x200)                                // a map block: its words (all 16: simple)
+      g_vram_fine[k * 2] = g_vram_fine[k * 2 + 1] = 0xff;
+  }
+}
+void ZeldaVramDirtyStride(uint32 addr, uint32 nwords, uint32 step) {
+  if (step == 1) { ZeldaVramDirty(addr, nwords); return; }
+  for (uint32 i = 0; i < nwords; i++, addr += step) {
+    uint32 a = addr & 0x7fff, k = a >> 4;
+    g_vram_dirty[k >> 3] |= (uint8)(1 << (k & 7));
+    if (a < 0x2000) g_vram_fine[a >> 3] |= (uint8)(1 << (a & 7));
   }
 }
 

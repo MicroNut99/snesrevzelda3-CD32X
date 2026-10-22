@@ -57,6 +57,7 @@ int main(int argc, char **argv) {
   const char *dumps = argc > 4 ? argv[4] : "";
   const char *out = argc > 5 ? argv[5] : ".";
   ZeldaInitialize();
+  ZeldaSetLanguage(NULL);                /* the game's text (as main.c) */
   g_zenv.ppu->extraLeftRight = 0;        /* no widescreen margin (main.c: extended_aspect_ratio 0) */
   /* ZH_REPLAY=n: replay reference recording n (saves/ref, run from the zelda3 folder);
    * ZH_HASH=file: the SNES RAM's hash after every frame (to compare two builds) */
@@ -78,6 +79,13 @@ int main(int argc, char **argv) {
     if (mdf) zh_mdstat_before_logic();
 #endif
     ZeldaRunFrame(input);
+    if (getenv("ZH_MODLOG")) {          /* ZH_MODLOG: the module / submodule when it changes */
+      static int last = -1; int m = g_ram[0x10] << 24 | g_ram[0x11] << 16 | g_ram[0x22] << 8 | g_ram[0x23];
+      if (m != last) fprintf(stderr, "frame %d module %08x\n", f, m), last = m;
+      if (getenv("ZH_TEXTLOG") && g_ram[0x10] == 0x14 && f % 20 == 0)
+        fprintf(stderr, "frame %d msgmod=%d trs=%d pos=%d idx=%x pfc=%d dark=%d buf=%02x %02x %02x %02x\n", f, g_ram[0x1cd8], g_ram[0x1cd4],
+                g_ram[0x1cd9] | g_ram[0x1cda] << 8, g_ram[0x1cf0] | g_ram[0x1cf1] << 8, g_ram[0xc007], g_ram[0xc009], g_ram[0x11200], g_ram[0x11201], g_ram[0x11202], g_ram[0x11203]);
+    }
     if (hf) {
       uint32 h = 2166136261u;
       for (int i = 0; i < 0x20000; i++) h = (h ^ g_ram[i]) * 16777619u;
@@ -94,6 +102,7 @@ int main(int argc, char **argv) {
       for (int l = 0; l < 3; l++) fprintf(stderr, "bg%d h=%d v=%d map=%04x tiles=%04x\n", l, q->bgLayer[l].hScroll, q->bgLayer[l].vScroll, q->bgLayer[l].tilemapAdr, q->bgLayer[l].tileAdr);
       uint32 vh = 2166136261u; for (int i = 0; i < 0x10000; i++) vh = (vh ^ ((uint8 *)q->vram)[i]) * 16777619u;
       fprintf(stderr, "vramhash=%08x\n", vh);
+      { FILE *vf = fopen("vram.bin", "wb"); if (vf) { fwrite(q->vram, 1, 0x10000, vf); fwrite(q->cgram, 1, 512, vf); fclose(vf); } }
       fprintf(stderr, "math: enabled=%02x add_sub=%d half=%d subtract=%d fixed=%d,%d,%d clip=%d prevent=%d bright=%d\n", q->mathEnabled, q->addSubscreen,
         q->halfColor, q->subtractColor, q->fixedColorR, q->fixedColorG, q->fixedColorB, q->clipMode, q->preventMathMode, q->brightness);
     }

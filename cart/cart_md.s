@@ -472,25 +472,56 @@ pause:                                          | ~0.05 ms between COMM0 reads (
 
 | ---- V-blank: read pad 1 (3/6-button, same routine as the CD version), count frames ---------
 vblank_handler:
-        movem.l d0-d2/a0-a3,-(sp)
+        movem.l d0-d3/a0-a3,-(sp)
         tst.b   rdy_flag                        | Zelda 3 32X: the committed ops, first thing
-        beq.b   8f
+        beq.w   8f
         movea.l rdy_ptr,a1
         movea.l rdy_end,a3
         lea     VDP_CTRL,a0
         lea     VDP_DATA,a2
 3:      cmpa.l  a3,a1
-        bcc.b   7f
+        bcc.w   7f
         move.l  (a1)+,d0                        | the control long
         move.w  (a1)+,d1                        | n words (0: d0's high word is a register)
         bne.b   4f
         swap    d0
         move.w  d0,(a0)
         bra.b   3b
-4:      move.l  d0,(a0)
+4:      cmpi.w  #16,d1                          | 16 words or more: DMA from the queue (68000 RAM)
+        bcc.b   6f
+        move.l  d0,(a0)
         subq.w  #1,d1
 5:      move.w  (a1)+,(a2)
         dbra    d1,5b
+        bra.b   3b
+6:      move.w  #0x9300,d3                      | length (words)
+        move.b  d1,d3
+        move.w  d3,(a0)
+        move.w  d1,d3
+        lsr.w   #8,d3
+        ori.w   #0x9400,d3
+        move.w  d3,(a0)
+        move.l  a1,d2                           | source / 2
+        lsr.l   #1,d2
+        move.w  #0x9500,d3
+        move.b  d2,d3
+        move.w  d3,(a0)
+        lsr.l   #8,d2
+        move.w  #0x9600,d3
+        move.b  d2,d3
+        move.w  d3,(a0)
+        lsr.l   #8,d2
+        andi.w  #0x7f,d2
+        ori.w   #0x9700,d2
+        move.w  d2,(a0)
+        swap    d0
+        move.w  d0,(a0)                         | the command's first word
+        swap    d0
+        ori.w   #0x80,d0                        | CD5: DMA
+        move.w  d0,-(sp)
+        move.w  (sp)+,(a0)                      | its second word from RAM: the 68000 waits for the DMA
+        adda.w  d1,a1
+        adda.w  d1,a1
         bra.b   3b
 7:      clr.b   rdy_flag
         addq.w  #1,applied
@@ -510,7 +541,7 @@ vblank_handler:
         bcs.b   2f
         clr.b   mus_pal5
         bsr     mus_tick
-2:      movem.l (sp)+,d0-d2/a0-a3
+2:      movem.l (sp)+,d0-d3/a0-a3
         rte
 
 read_pad:

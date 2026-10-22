@@ -33,10 +33,18 @@ extern int frame_ctr_dbg;
 // half a tilemap row) - the 32X keeps the Genesis's copy of the backgrounds in step with them.
 // Every writer of g_zenv.vram marks what it writes (VramW / ZeldaVramDirty); pc/zh_main.c
 // (ZH_VRAMCHECK) checks that against a copy of the VRAM after every frame.
+// The two BG maps (words 0x0000-0x1FFF) also have a bit per word (g_vram_fine): a column the
+// game writes (every 32nd word) is sent to the Genesis as that, not as the 64 blocks it touches.
 extern uint8 g_vram_dirty[0x8000 / 16 / 8];
+extern uint8 g_vram_fine[0x2000 / 8];
 void ZeldaVramDirty(uint32 addr, uint32 nwords);
+void ZeldaVramDirtyStride(uint32 addr, uint32 nwords, uint32 step);
 static inline le16 *VramW(uint32 addr, uint32 nwords) {   // &g_zenv.vram[addr], marked
   ZeldaVramDirty(addr, nwords);
+  return &g_zenv.vram[addr];
+}
+static inline le16 *VramWS(uint32 addr, uint32 nwords, uint32 step) {   // nwords, every step-th
+  ZeldaVramDirtyStride(addr, nwords, step);
   return &g_zenv.vram[addr];
 }
 
