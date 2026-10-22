@@ -1,0 +1,20 @@
+# Nintendo's data never goes in this repository: the ROM and everything extracted from it
+*.sfc
+*.smc
+zelda3_assets.dat
+zelda3/assets/*.yaml
+zelda3/assets/*.txt
+zelda3/assets/dungeon/
+zelda3/assets/img/
+zelda3/assets/overworld/
+zelda3/assets/sound/
+zelda3/assets/sprites/*.png
+zelda3/tables/
+zelda3/assets/__pycache__/
+# build products
+pc/zh
+*.o
+*.elf
+*.32x
+*.32X
+mars/obj/
