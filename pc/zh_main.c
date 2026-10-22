@@ -76,11 +76,20 @@ int main(int argc, char **argv) {
       for (int l = 0; l < 3; l++) fprintf(stderr, "bg%d h=%d v=%d map=%04x tiles=%04x\n", l, q->bgLayer[l].hScroll, q->bgLayer[l].vScroll, q->bgLayer[l].tilemapAdr, q->bgLayer[l].tileAdr);
       uint32 vh = 2166136261u; for (int i = 0; i < 0x10000; i++) vh = (vh ^ ((uint8 *)q->vram)[i]) * 16777619u;
       fprintf(stderr, "vramhash=%08x\n", vh);
+      fprintf(stderr, "math: enabled=%02x add_sub=%d half=%d subtract=%d fixed=%d,%d,%d clip=%d prevent=%d bright=%d\n", q->mathEnabled, q->addSubscreen,
+        q->halfColor, q->subtractColor, q->fixedColorR, q->fixedColorG, q->fixedColorB, q->clipMode, q->preventMathMode, q->brightness);
     }
     char key[16]; snprintf(key, sizeof key, ",%d,", f);
     char hay[4096]; snprintf(hay, sizeof hay, ",%s,", dumps);
-    static uint8 idx[256 * 240];
+    static uint8 idx[256 * 2 * 240];
     bool drawn = false;
+    /* ZH_RGB15: the 32X's 15-bit direct colour picture (colour math, brightness) instead of the
+     * 8-bit CGRAM indices; ZH_AUTO: as the 32X - direct colour only for the frames that need it
+     * (PpuNeedsDirectColour); ZH_REF: zelda3's depth-buffer line renderer only (the reference) */
+    const bool rgb15 = getenv("ZH_AUTO") ? PpuNeedsDirectColour(g_zenv.ppu) : getenv("ZH_RGB15") != NULL;
+    const uint32 dflags = kPpuRenderFlags_NewRenderer | (rgb15 ? kPpuRenderFlags_Rgb15 : kPpuRenderFlags_Index8) |
+                          (getenv("ZH_REF") ? kPpuRenderFlags_NoPaint : 0);
+    const int dpitch = rgb15 ? 512 : 256;
     if (getenv("ZH_SKIP") && f % atoi(getenv("ZH_SKIP")) != 0) {
       ZeldaSkipPpuFrame();         /* frame skip as the 32X: the RAM must stay the same */
     } else if (getenv("ZH_DRAWALL")) {    /* draw every frame as the game (and the 32X) does: the draw
@@ -91,16 +100,21 @@ int main(int argc, char **argv) {
         static Ppu other;
         ZeldaDrawCtx ctx, ctx2;
         int n = atoi(getenv("ZH_SPLIT"));
-        ZeldaDrawPpuFrameBegin(&ctx, idx, 256, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);
+        ZeldaDrawPpuFrameBegin(&ctx, idx, dpitch, dflags);
         ZeldaDrawCtxCopy(&ctx2, &other, &ctx);
         ZeldaDrawPpuLines(&ctx2, n, ctx.height, ctx.height);
         ZeldaDrawPpuLines(&ctx, 0, n - 1, ctx.height);
         ZeldaDrawPpuFrameEnd(&ctx);
       } else {
-        ZeldaDrawPpuFrame(idx, 256, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);
+        ZeldaDrawPpuFrame(idx, dpitch, dflags);
       }
       drawn = true;
-      if (pxf) {                    /* ZH_PIXHASH: the 8-bit picture + CGRAM, per frame */
+      if (pxf && rgb15) {           /* ZH_PIXHASH, direct colour: the 15-bit picture's values */
+        uint32 h = 2166136261u;
+        const uint16 *p16 = (const uint16 *)idx;
+        for (int i = 0; i < 256 * 224; i++) h = (h ^ (p16[i] & 0xff)) * 16777619u, h = (h ^ (p16[i] >> 8)) * 16777619u;
+        fprintf(pxf, "%d %08x\n", f, h);
+      } else if (pxf) {             /* ZH_PIXHASH: the 8-bit picture + CGRAM, per frame */
         uint32 h = 2166136261u;
         for (int i = 0; i < 256 * 224; i++) h = (h ^ idx[i]) * 16777619u;
         for (int i = 0; i < 256; i++) h = (h ^ (g_zenv.ppu->cgram[i] & 0xff)) * 16777619u, h = (h ^ (g_zenv.ppu->cgram[i] >> 8)) * 16777619u;
@@ -108,10 +122,10 @@ int main(int argc, char **argv) {
       }
     }
     if (strstr(hay, key) && getenv("ZH_INDEX8")) {    /* the 32X's path: 8-bit CGRAM indices */
-      if (!drawn) ZeldaDrawPpuFrame(idx, 256, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);
-      char fn[512]; snprintf(fn, sizeof fn, "%s/i%05d.ppm", out, f);
+      if (!drawn) ZeldaDrawPpuFrame(idx, dpitch, dflags);
+      char fn[512]; snprintf(fn, sizeof fn, "%s/%c%05d.ppm", out, rgb15 ? 'd' : 'i', f);
       FILE *o = fopen(fn, "wb"); fprintf(o, "P6\n256 224\n255\n");
-      for (int i = 0; i < 256 * 224; i++) { uint16 c = g_zenv.ppu->cgram[idx[i]];
+      for (int i = 0; i < 256 * 224; i++) { uint16 c = rgb15 ? ((const uint16 *)idx)[i] : g_zenv.ppu->cgram[idx[i]];
         uint8 rgb[3] = { (uint8)((c & 31) << 3), (uint8)((c >> 5 & 31) << 3), (uint8)((c >> 10 & 31) << 3) }; fwrite(rgb, 1, 3, o); }
       fclose(o);
     } else if (strstr(hay, key)) {

@@ -66,6 +66,8 @@ struct Z32Stats {
   uint32 split;                              /* the line the slave starts at (last frame) */
   uint32 slave_sum, wait_sum;                /* FRT ticks: the slave's drawing, the master's wait for it */
   uint32 drawn, skipped;                     /* frames drawn; game frames run without a picture */
+  uint32 direct, relayouts;                  /* frames drawn in direct colour; layout changes */
+  uint32 direct_draw_sum;                    /* FRT ticks drawing the direct colour frames */
 };
 extern "C" { Z32Stats z32_stats; extern char *z32_heap_peak; }
 
@@ -98,6 +100,7 @@ static int snes_input(uint16 pad) {
   return in;
 }
 static uint16 frt(void) { uint8 h = FRT_FRCH; uint8 l = FRT_FRCL; return (uint16)(h << 8 | l); }
+extern "C" uint16 z32_frt(void) { return frt(); }
 
 /* ---- the slave SH2 draws the lower part of the picture (ZeldaDrawPpuLines, zelda_rtl.c) ----
  * The master readies the frame (ZeldaDrawPpuFrameBegin), copies the drawing context for the
@@ -138,12 +141,46 @@ static void load_assets(void) {
   }
 }
 
+/* The picture in the frame buffer, in one of two layouts, chosen per frame:
+ * direct colour (DISPMODE 2; 15 bits a pixel: the SNES colour math, the colour window's clip,
+ *   the brightness) for the frames that need it (PpuNeedsDirectColour): a 32X line is 320 pixels
+ *   = 640 bytes, 224 of them would not fit in the 128 KB, so the lines overlap: line y starts at
+ *   0x200 + y * 576, 32 black pixels on each side; the right border of a line is the left border
+ *   of the next. The SNES's 256 pixels start 64 bytes into a line. 129,600 bytes.
+ * packed pixels (DISPMODE 1; 8 bits: the CGRAM index, the CGRAM as the 32X palette, brightness
+ *   applied to it) for the others - half the frame buffer writes: lines of 320 bytes, the
+ *   picture 32 bytes in.
+ * Z32_INDEX8 / Z32_DIRECT: one layout for every frame (tests). */
+struct Z32Layout { uint8 dispmode; uint16 step, offset; uint32 flags; };
+static const Z32Layout kLayouts[2] = {
+  { 1, 320, 32, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8 },
+  { 2, 576, 64, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Rgb15 },
+};
+static int8 z32_fb_layout[2] = { -1, -1 };       /* per frame buffer (FBCTL bit 0 when it is drawn) */
+static uint8 z32_shown_layout, z32_drawn_layout;
+
+static void layout_frame_buffer(int l) {         /* the line table and black borders, for layout l */
+  const Z32Layout *L = &kLayouts[l];
+  for (int i = 0; i < 256; i++) FB16[i] = (uint16_t)((0x200 + (i < 224 ? i : 0) * L->step) / 2);
+  volatile uint32 *p = (uint32 *)FB8;            /* words: the FB drops byte writes of 0 */
+  if (l == 1) {
+    for (int y = 0; y <= 224; y++)               /* 64 bytes at each line start = every border */
+      for (int k = 0; k < 16; k++) p[(y * 576) / 4 + k] = 0;
+  } else {
+    for (int y = 0; y < 224; y++) {
+      for (int k = 0; k < 8; k++) p[(y * 320) / 4 + k] = 0;
+      for (int k = 0; k < 8; k++) p[(y * 320 + 288) / 4 + k] = 0;
+    }
+  }
+}
+
 static void video_init(void) {
-  VDP_DISPMODE = 0x0001;                         /* packed pixel (8 bpp), PRI clear: 32X in front */
+  VDP_DISPMODE = 1;                              /* PRI clear: the 32X in front */
   for (int fb = 0; fb < 2; fb++) {
-    for (int i = 0; i < 256; i++) FB16[i] = (uint16_t)(0x100 + (i < 224 ? i : 0) * 160);   /* rows of 320 */
     volatile uint32 *p = (uint32 *)FB8;          /* words: the FB drops byte writes of 0 */
-    for (int i = 0; i < 320 * 224 / 4; i++) p[i] = 0;
+    for (int i = 0; i < (0x20000 - 0x200) / 4; i++) p[i] = 0;
+    layout_frame_buffer(0);
+    z32_fb_layout[VDP_FBCTL & 1] = 0;
     VDP_FBCTL = (uint16_t)((VDP_FBCTL & 1) ^ 1);
     while (!(VDP_FBCTL & 0x8000)) { }            /* the swap happens in the V-blank */
   }
@@ -206,8 +243,17 @@ static void check_picture(uint32 f) {
   if (f >= (uint32)(z32_expect_px_end - z32_expect_px) / 4)
     return;
   uint32 ph = 2166136261u;
-  for (int y = 0; y < 224; y++) { const uint8 *row = FB8 + 32 + y * 320; for (int x = 0; x < 256; x++) ph = (ph ^ row[x]) * 16777619u; }
-  for (int i = 0; i < 256; i++) { uint16 c = g_zenv.ppu->cgram[i]; ph = (ph ^ (c & 0xff)) * 16777619u; ph = (ph ^ (c >> 8)) * 16777619u; }
+  const Z32Layout *L = &kLayouts[z32_drawn_layout];
+  const uint8 *pic = (const uint8 *)FB8 + L->offset;
+  if (z32_drawn_layout == 0) {                   /* as pc/zh_main.c: indices + CGRAM */
+    for (int y = 0; y < 224; y++) { const uint8 *row = pic + y * L->step; for (int x = 0; x < 256; x++) ph = (ph ^ row[x]) * 16777619u; }
+    for (int i = 0; i < 256; i++) { uint16 c = g_zenv.ppu->cgram[i]; ph = (ph ^ (c & 0xff)) * 16777619u; ph = (ph ^ (c >> 8)) * 16777619u; }
+  } else {                                       /* the 16-bit values (ZH_RGB15) */
+    for (int y = 0; y < 224; y++) {
+      const uint16 *row = (const uint16 *)(pic + y * L->step);
+      for (int x = 0; x < 256; x++) { uint16 v = row[x]; ph = (ph ^ (v & 0xff)) * 16777619u; ph = (ph ^ (v >> 8)) * 16777619u; }
+    }
+  }
   const uint8 *e = z32_expect_px + 4 * f;
   z32_stats.px_checked++;
   if (ph != ((uint32)e[0] << 24 | e[1] << 16 | e[2] << 8 | e[3]) && z32_stats.px_first_bad == 0xFFFFFFFF) {
@@ -225,7 +271,22 @@ static void check_picture(uint32 f) {
 static void draw_frame(void) {
   static uint32 seq, split = 112;
   ZeldaDrawCtx ctx;
-  ZeldaDrawPpuFrameBegin(&ctx, FB8 + 32, 320, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);
+#if defined(Z32_INDEX8)
+  int l = 0;
+#elif defined(Z32_DIRECT)
+  int l = 1;
+#else
+  int l = PpuNeedsDirectColour(g_zenv.ppu) ? 1 : 0;
+#endif
+  int fb = VDP_FBCTL & 1;
+  if (z32_fb_layout[fb] != l) {                  /* this frame buffer held the other layout */
+    layout_frame_buffer(l);
+    z32_fb_layout[fb] = (int8)l;
+    z32_stats.relayouts++;
+  }
+  z32_drawn_layout = (uint8)l;
+  z32_stats.direct += l;
+  ZeldaDrawPpuFrameBegin(&ctx, (uint8 *)FB8 + kLayouts[l].offset, kLayouts[l].step, kLayouts[l].flags);
   ZeldaDrawCtxCopy(&z32_slave_ctx, &z32_slave_ppu, &ctx);
   THRU(z32_slave_from) = split;
   THRU(z32_slave_cmd) = ++seq;
@@ -259,7 +320,8 @@ static void NORETURN z32_stop(void) {
   __asm__ volatile("" ::: "memory");             /* z32_stats is written before we hold */
   snapshot_palette();
   flip();                                        /* the frame just drawn, on screen */
-  palette_from_cgram();
+  VDP_DISPMODE = kLayouts[z32_drawn_layout].dispmode;
+  if (z32_drawn_layout == 0) palette_from_cgram();
   COMM14 = 0x0BAD;
   for (;;) __asm__ volatile("" ::: "memory");
 }
@@ -270,7 +332,11 @@ static void swap_pictures(void) {
   uint16 t4 = frt();
   flip();
   uint16 t5 = frt();
-  palette_from_cgram();
+  if (z32_shown_layout != z32_drawn_layout) {    /* in the V-blank the swap happened in */
+    VDP_DISPMODE = kLayouts[z32_drawn_layout].dispmode;
+    z32_shown_layout = z32_drawn_layout;
+  }
+  if (z32_drawn_layout == 0) palette_from_cgram();   /* direct colour: no palette */
   z32_stats.flip_sum += (uint16)(t5 - t4);
   z32_stats.pal_sum += (uint16)(frt() - t5);
 }
@@ -293,6 +359,9 @@ int main(void) {
   if (!ZeldaStartReplayFromMemory(z32_replay, (size_t)(z32_replay_end - z32_replay))) Die("replay");
 #endif
   video_init();
+#ifdef Z32_PPU_TIMING
+  { extern Ppu *g_ppu_time_ctx; g_ppu_time_ctx = g_zenv.ppu; }
+#endif
 #ifdef Z32_PATTERN
   for (;;) {                                     /* display test: colour bars, no game */
     for (int y = 0; y < 224; y++) for (int x = 0; x < 320; x++) FB8[y * 320 + x] = (uint8)(x / 20 + 1 + (y / 56) * 16);
@@ -311,7 +380,7 @@ int main(void) {
 #else
   enum { kMaxSkip = 6 };
 #endif
-  uint32 f = 0, clock = 0, credited = 0;
+  uint32 f = 0, clock = 0, credited = 0, clock_base = 0;
   uint16 last = md_frames();
   bool pending = false;                          /* a drawn picture waits for its V-blank */
   for (;;) {
@@ -338,6 +407,20 @@ int main(void) {
       }
     }
     z32_stats.frames = f;
+#ifdef Z32_STATS_FROM                            /* test: the timings of one part of the game */
+    static bool reset;
+    if (!reset && f >= Z32_STATS_FROM) {
+      reset = true;
+      uint32 magic = z32_stats.magic;
+      memset(&z32_stats, 0, sizeof z32_stats);
+      z32_stats.magic = magic, z32_stats.first_bad = z32_stats.px_first_bad = 0xFFFFFFFF;
+      clock_base = clock;
+#ifdef Z32_PPU_TIMING
+      extern uint32 g_ppu_t[6];
+      memset(g_ppu_t, 0, sizeof g_ppu_t);
+#endif
+    }
+#endif
     /* the last picture goes on screen at the V-blank after it was drawn and the first game
      * frame of this pass ran (the master would only wait for the swap otherwise) */
     if (pending) { swap_pictures(); pending = false; }
@@ -347,12 +430,13 @@ int main(void) {
     check_picture(f - 1);
     uint32 dd = (uint16)(t3 - t2);
     z32_stats.draw_sum += dd;
+    if (z32_drawn_layout) z32_stats.direct_draw_sum += dd;
     if (dd > z32_stats.draw_max) z32_stats.draw_max = dd;
     z32_stats.v_draw += (uint16)(m3 - m2);
     z32_stats.drawn++;
     z32_stats.heap_peak = (uint32)(z32_heap_peak - (char *)0x06000000);
     pending = true;
-    z32_stats.v_total = clock;
+    z32_stats.v_total = clock - clock_base;
     COMM14 = (uint16)f;
   }
 }

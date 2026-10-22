@@ -39,8 +39,10 @@ enum {
 static uint32 g_ppuExpand[2][256];
 #if defined(__GNUC__)
 #define PPU_INLINE inline __attribute__((always_inline))   // Z32X: specialised per caller (bpp4)
+#define PPU_NOINLINE __attribute__((noinline))            // (types.h's NOINLINE is MSVC only)
 #else
 #define PPU_INLINE FORCEINLINE
+#define PPU_NOINLINE NOINLINE
 #endif
 
 static void PpuInitTables(void) {
@@ -162,6 +164,20 @@ void ppu_saveload(Ppu *ppu, SaveLoadFunc *func, void *ctx) {
   func(ctx, tmp, 123);
 }
 
+// Z32X: can this frame's picture differ from its CGRAM indices through the palette - colour
+// math with an effect, or the colour window's clip to black? (The registers it reads do not
+// change during a frame: the HDMA writes windows, scrolling and mode 7 only.) The 32X draws
+// such frames in direct colour (kPpuRenderFlags_Rgb15), the others as 8-bit indices.
+bool PpuNeedsDirectColour(Ppu *ppu) {
+  if (ppu->clipMode != 0)
+    return true;
+  if (ppu->preventMathMode == 3 || !ppu->mathEnabled)
+    return false;
+  uint32 fixed_color = ppu->fixedColorR | ppu->fixedColorG << 5 | ppu->fixedColorB << 10;
+  bool subscreen = ppu->addSubscreen && ppu->screenEnabled[1] != 0;
+  return fixed_color != 0 || ppu->halfColor || subscreen;
+}
+
 int PpuGetCurrentRenderScale(Ppu *ppu, uint32_t render_flags) {
   bool hq = ppu->mode == 7 && !ppu->forcedBlank &&
     (render_flags & (kPpuRenderFlags_4x4Mode7 | kPpuRenderFlags_NewRenderer)) == (kPpuRenderFlags_4x4Mode7 | kPpuRenderFlags_NewRenderer);
@@ -194,6 +210,15 @@ void PpuBeginDrawing(Ppu *ppu, uint8_t *pixels, size_t pitch, uint32_t render_fl
       ((i << 3) | (i >> 2)) * ppu_brightness / 15;
     // Store 31 extra entries to remove the need for clamping to 31.
     memset(&ppu->brightnessMult[32], ppu->brightnessMult[31], 31);
+    for (int i = 0; i < 32; i++)                // Z32X: 5-bit levels (Rgb15)
+      ppu->bright5Half[i * 2] = ppu->bright5Half[i * 2 + 1] = ppu->bright5[i] = (uint8)(i * ppu_brightness / 15);
+    memset(&ppu->bright5[32], ppu->bright5[31], 31);
+  }
+  if (render_flags & kPpuRenderFlags_Rgb15) {   // Z32X: the CGRAM does not change during a frame
+    for (int i = 0; i < 256; i++) {
+      uint32 c = ppu->cgram[i];
+      ppu->palette15[i] = (uint16)(ppu->bright5[c & 31] | ppu->bright5[c >> 5 & 31] << 5 | ppu->bright5[c >> 10 & 31] << 10);
+    }
   }
 
   if (PpuGetCurrentRenderScale(ppu, ppu->renderFlags) == 4) {
@@ -779,16 +804,23 @@ static void PpuDrawBackgrounds(Ppu *ppu, int y, bool sub) {
 // above: BG3 lo 0x12 < sprites 0 0x24/26 < sprites 1 0x64/66 < BG2 lo 0x71 < BG1 lo 0x80 <
 // sprites 2 0xa4/a6 < BG2 hi 0xb1 < BG1 hi 0xc0 < sprites 3 0xe4/e6 < BG3 hi 0xf2), so painting
 // them lowest first gives the same picture as the depth compare, with no compare per pixel.
-#define PAINT(i) do { uint32 p_ = row & 15; if (p_) dst[i] = (uint8)(base + p_); row >>= 4; } while (0)
+// A pixel: its CGRAM index, and with kTrack 256 bytes on whether the colour math applies to its
+// layer (bit 'layer' of the math enable: the depth value's low nibble - BG1 0, BG2 1, BG3 2,
+// sprites 4 / 6, backdrop 5)
+#define PAINT(i) do { uint32 p_ = row & 15; if (p_) { dst[i] = (uint8)(base + p_); if (kTrack) dst[(i) + 256] = (uint8)lid; } row >>= 4; } while (0)
 
 // One pass over a layer's line: the low-priority tiles are painted, the high ones go into hi
-static PPU_INLINE void PpuPaintBackground(Ppu *ppu, uint y, uint layer, bool bpp4, PpuPaintList *hi) {
+// (one copy per kTrack / bpp4: the line's code must fit the SH2's 4 KB cache - inlined at every
+// call it did not, and each miss refills from the cartridge)
+template <bool kTrack, bool bpp4>
+static PPU_NOINLINE void PpuPaintBackground(Ppu *ppu, uint y, bool sub, uint layer, PpuPaintList *hi, uint8 *line) {
   const int kTileWords = bpp4 ? 16 : 8, kPaletteShift = bpp4 ? 6 : 8;
+  const uint32 lid = (ppu->mathEnabled >> layer) & 1;   // kTrack: the math flag
   hi->n = 0;
-  if (!IS_SCREEN_ENABLED(ppu, 0, layer))
+  if (!IS_SCREEN_ENABLED(ppu, sub, layer))
     return;
   PpuWindows win;
-  IS_SCREEN_WINDOWED(ppu, 0, layer) ? PpuWindows_Calc(&win, ppu, layer) : PpuWindows_Clear(&win, ppu, layer);
+  IS_SCREEN_WINDOWED(ppu, sub, layer) ? PpuWindows_Calc(&win, ppu, layer) : PpuWindows_Clear(&win, ppu, layer);
   BgLayer *bglayer = &ppu->bgLayer[layer];
   y += bglayer->vScroll;
   int sc_offs = bglayer->tilemapAdr + (((y >> 3) & 0x1f) << 5);
@@ -800,7 +832,6 @@ static PPU_INLINE void PpuPaintBackground(Ppu *ppu, uint y, uint layer, bool bpp
   };
   int tileadr = ppu->bgLayer[layer].tileAdr;
   int tileadr1 = tileadr + 7 - (y & 0x7), tileadr0 = tileadr + (y & 0x7);
-  uint8 *line = (uint8 *)ppu->lineBuf;
   PpuPaintItem *it = hi->item;
   for (size_t windex = 0; windex < win.nr; windex++) {
     if (win.bits & (1 << windex))
@@ -828,7 +859,7 @@ static PPU_INLINE void PpuPaintBackground(Ppu *ppu, uint y, uint layer, bool bpp
         } else {
           uint8 *d = dst;
           int c = curw;
-          do { uint32 p_ = row & 15; if (p_) *d = (uint8)(base + p_); row >>= 4; d++; } while (--c);
+          do { uint32 p_ = row & 15; if (p_) { *d = (uint8)(base + p_); if (kTrack) d[256] = (uint8)lid; } row >>= 4; d++; } while (--c);
         }
       }
       dst += curw;
@@ -848,6 +879,8 @@ static PPU_INLINE void PpuPaintBackground(Ppu *ppu, uint y, uint layer, bool bpp
           dst[2] = (uint8)(base + (row >> 8 & 15)); dst[3] = (uint8)(base + (row >> 12 & 15));
           dst[4] = (uint8)(base + (row >> 16 & 15)); dst[5] = (uint8)(base + (row >> 20 & 15));
           dst[6] = (uint8)(base + (row >> 24 & 15)); dst[7] = (uint8)(base + (row >> 28));
+          if (kTrack)
+            for (int k = 0; k < 8; k++) dst[k + 256] = (uint8)lid;
         } else {
           PAINT(0); PAINT(1); PAINT(2); PAINT(3); PAINT(4); PAINT(5); PAINT(6); PAINT(7);
         }
@@ -874,9 +907,10 @@ static PPU_INLINE void PpuPaintBackground(Ppu *ppu, uint y, uint layer, bool bpp
 }
 
 // The kept high-priority tiles
-static void PpuPaintKept(Ppu *ppu, const PpuPaintList *hi) {
+template <bool kTrack>
+static void PpuPaintKept(const PpuPaintList *hi, uint8 *line, uint32 lid) {
   for (const PpuPaintItem *it = hi->item, *end = it + hi->n; it != end; it++) {
-    uint8 *dst = (uint8 *)ppu->lineBuf + it->x;
+    uint8 *dst = line + it->x;
     uint32 row = it->row, base = it->base;
     if (it->n == 8) {
       PAINT(0); PAINT(1); PAINT(2); PAINT(3); PAINT(4); PAINT(5); PAINT(6); PAINT(7);
@@ -889,12 +923,12 @@ static void PpuPaintKept(Ppu *ppu, const PpuPaintList *hi) {
 #undef PAINT
 
 // the sprite pixels (ppu_evaluateSprites' objBuffer) of the priorities in levels (bit p)
-static void PpuPaintSprites(Ppu *ppu, uint32 levels) {
+template <bool kTrack>
+static void PpuPaintSprites(Ppu *ppu, bool sub, uint32 levels, uint8 *line) {
   if (!(ppu->objLevels & levels))
     return;
   PpuWindows win;
-  IS_SCREEN_WINDOWED(ppu, 0, 4) ? PpuWindows_Calc(&win, ppu, 4) : PpuWindows_Clear(&win, ppu, 4);
-  uint8 *line = (uint8 *)ppu->lineBuf;
+  IS_SCREEN_WINDOWED(ppu, sub, 4) ? PpuWindows_Calc(&win, ppu, 4) : PpuWindows_Clear(&win, ppu, 4);
   for (size_t windex = 0; windex < win.nr; windex++) {
     if (win.bits & (1 << windex))
       continue;
@@ -903,35 +937,230 @@ static void PpuPaintSprites(Ppu *ppu, uint32 levels) {
     const PpuZbufType *src = ppu->objBuffer.data + kPpuExtraLeftRight;
     for (int x = left; x < right; x++) {
       uint32 v = src[x];
-      if ((v & 0xff) && (levels >> (v >> 14) & 1))
+      if ((v & 0xff) && (levels >> (v >> 14) & 1)) {
         line[x] = (uint8)v;
+        if (kTrack)
+          line[x + 256] = (uint8)((ppu->mathEnabled >> (v >> 8 & 15)) & 1);
+      }
     }
   }
 }
 
-static void PpuPaintLine(Ppu *ppu, uint y) {
+// One screen (main or sub) of a mode-1 line into line[0..255], lowest priority first
+template <bool kTrack>
+static PPU_NOINLINE void PpuPaintScreen(Ppu *ppu, uint y, bool sub, uint8 *line) {
+  uint32 *l32 = (uint32 *)line;
   for (int i = 0; i < 64; i++)
-    ppu->lineBuf[i] = 0;                        // the backdrop: CGRAM 0
-  bool spr = ppu->lineHasSprites && IS_SCREEN_ENABLED(ppu, 0, 4);
+    l32[i] = 0;                                 // the backdrop: CGRAM 0
+  if (kTrack) {
+    uint32 bd = (ppu->mathEnabled >> 5) & 1;    // the backdrop's math flag (layer 5)
+    for (int i = 0; i < 64; i++)
+      l32[64 + i] = bd * 0x01010101;
+  }
+  bool spr = ppu->lineHasSprites && IS_SCREEN_ENABLED(ppu, sub, 4);
   PpuPaintList *hi = ppu->paintHi;              // per context: not on the (small) SH2 stacks
-  PpuPaintBackground(ppu, y, 2, false, &hi[2]); // BG3 lo (its hi tiles kept)
-  if (spr) PpuPaintSprites(ppu, 3);             // sprites 0, 1
-  PpuPaintBackground(ppu, y, 1, true, &hi[1]);  // BG2 lo
-  PpuPaintBackground(ppu, y, 0, true, &hi[0]);  // BG1 lo
-  if (spr) PpuPaintSprites(ppu, 4);             // sprites 2
-  PpuPaintKept(ppu, &hi[1]);                    // BG2 hi
-  PpuPaintKept(ppu, &hi[0]);                    // BG1 hi
-  if (spr) PpuPaintSprites(ppu, 8);             // sprites 3
-  PpuPaintKept(ppu, &hi[2]);                    // BG3 hi
-  uint32 *d32 = (uint32 *)&ppu->renderBuffer[(y - 1) * ppu->renderPitch];
-  for (int i = 0; i < 64; i++)
-    d32[i] = ppu->lineBuf[i];                   // the line buffer is in memory order: as is
+  PpuPaintBackground<kTrack, false>(ppu, y, sub, 2, &hi[2], line);   // BG3 lo (its hi tiles kept)
+  if (spr) PpuPaintSprites<kTrack>(ppu, sub, 3, line);               // sprites 0, 1
+  PpuPaintBackground<kTrack, true>(ppu, y, sub, 1, &hi[1], line);    // BG2 lo
+  PpuPaintBackground<kTrack, true>(ppu, y, sub, 0, &hi[0], line);    // BG1 lo
+  if (spr) PpuPaintSprites<kTrack>(ppu, sub, 4, line);               // sprites 2
+  uint32 me = ppu->mathEnabled;
+  PpuPaintKept<kTrack>(&hi[1], line, (me >> 1) & 1);                 // BG2 hi
+  PpuPaintKept<kTrack>(&hi[0], line, me & 1);                        // BG1 hi
+  if (spr) PpuPaintSprites<kTrack>(ppu, sub, 8, line);               // sprites 3
+  PpuPaintKept<kTrack>(&hi[2], line, (me >> 2) & 1);                 // BG3 hi
+}
+
+// Z32X: the 32X's mode-1 line. Index8: the main screen's CGRAM indices. Rgb15: the colour after
+// the colour window, the colour math (with the subscreen painted too when it takes part) and
+// the brightness - the same arithmetic as the depth-buffer path below.
+// CGRAM indices to colours (the palette with the brightness), line[left..right) to dst[...]: 4
+// indices a read, 2 pixels a frame buffer write (a function of its own: the registers)
+static PPU_NOINLINE void PpuPalSpan(uint16 *dst, const uint8 *line, uint32 i, uint32 right, const uint16 *pal) {
+  for (; (i & 3) && i < right; i++)             // to a 4-pixel boundary
+    dst[i] = pal[line[i]];
+  const uint32 *l32 = (const uint32 *)(line + i);
+  uint32 *d32 = (uint32 *)(dst + i);
+  for (; i + 4 <= right; i += 4) {
+    uint32 w = *l32++;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    d32[0] = (uint32)pal[w >> 24] << 16 | pal[(w >> 16) & 0xff];
+    d32[1] = (uint32)pal[(w >> 8) & 0xff] << 16 | pal[w & 0xff];
+#else
+    d32[0] = (uint32)pal[(w >> 8) & 0xff] << 16 | pal[w & 0xff];
+    d32[1] = (uint32)pal[w >> 24] << 16 | pal[(w >> 16) & 0xff];
+#endif
+    d32 += 2;
+  }
+  for (; i < right; i++)
+    dst[i] = pal[line[i]];
+}
+
+// The usual colour math over a span: main + subscreen, halved (kHalf) or clamped per component
+// at 31, where the main pixel's layer takes the colour math (pm[256]: its flag) and the
+// subscreen is not backdrop (backdrop: + fixed colour 0, not halved = as is); then the
+// brightness (kFull: 15, none) - the same results as the component arithmetic in PpuPaintLine.
+// On packed 15-bit colours: the halved sum is the per-component floor average
+// (a & b) + (((a ^ b) & 0x7bde) >> 1); the clamped sum spreads the components apart (R bits 0-4,
+// B 10-14, G 21-25), adds, and turns each component's carry into all ones. A function of its
+// own: inside PpuPaintLine the SH2's 16 registers ran out and every pixel went via the stack.
+template <bool kFull, bool kHalf>
+static PPU_NOINLINE void PpuBlendSpan(uint16 *d, const uint8 *pm, const uint8 *ps, uint32 n,
+                                      const uint16 *cg, uint32 cmask, const uint8 *bmap) {
+  const uint8 *pf = pm + 256;
+#define BLEND1(c) do { uint32 si_; c = cg[*pm++] & cmask; \
+    if (*pf++ && (si_ = *ps) != 0) { \
+      uint32 c2_ = cg[si_] & 0x7fff; \
+      if (kHalf) { \
+        c = (c & c2_) + (((c ^ c2_) & 0x7bde) >> 1); \
+      } else { \
+        uint32 s_ = ((c & 0x7c1f) | (c & 0x03e0) << 16) + ((c2_ & 0x7c1f) | (c2_ & 0x03e0) << 16); \
+        uint32 o_ = s_ & 0x04008020; \
+        s_ |= o_ - (o_ >> 5); \
+        c = (s_ & 0x7c1f) | (s_ >> 16 & 0x03e0); \
+      } \
+    } \
+    ps++; \
+    if (!kFull) c = bmap[c & 31] | bmap[c >> 5 & 31] << 5 | bmap[c >> 10] << 10; } while (0)
+  if (((uintptr_t)d & 2) && n) {                // to a 4-byte boundary
+    uint32 c; BLEND1(c); *d++ = (uint16)c; n--;
+  }
+  uint32 *d32 = (uint32 *)d;
+  for (; n >= 2; n -= 2) {                      // 2 pixels a frame buffer write
+    uint32 c0, c1;
+    BLEND1(c0); BLEND1(c1);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    *d32++ = c0 << 16 | c1;
+#else
+    *d32++ = c1 << 16 | c0;
+#endif
+  }
+  if (n) {
+    uint32 c; BLEND1(c); *(uint16 *)d32 = (uint16)c;
+  }
+#undef BLEND1
+}
+
+#ifdef Z32_PPU_TIMING                            // test: FRT ticks per stage, direct colour lines
+extern "C" uint16 z32_frt(void);
+extern "C" { uint32 g_ppu_t[6]; Ppu *g_ppu_time_ctx; }   // the master's lines only
+#define PT(k) do { if (ppu == g_ppu_time_ctx) { uint16 t_ = z32_frt(); g_ppu_t[k] += (uint16)(t_ - pt_); pt_ = t_; } } while (0)
+#else
+#define PT(k) do { } while (0)
+#endif
+static PPU_NOINLINE void PpuPaintLine(Ppu *ppu, uint y) {
+#ifdef Z32_PPU_TIMING
+  uint16 pt_ = z32_frt();
+#endif
+  uint8 *line = (uint8 *)ppu->lineBuf, *sub_line = line + 512;
+  uint8 *out8 = &ppu->renderBuffer[(y - 1) * ppu->renderPitch];
+  if (ppu->renderFlags & kPpuRenderFlags_Index8) {
+    PpuPaintScreen<false>(ppu, y, false, line);
+    uint32 *d32 = (uint32 *)out8;
+    for (int i = 0; i < 64; i++)
+      d32[i] = ppu->lineBuf[i];                 // the line buffer is in memory order: as is
+    return;
+  }
+  uint32 math_enabled = ppu->mathEnabled;
+  bool may_math = ppu->preventMathMode != 3 && math_enabled;
+  bool rendered_subscreen = false;
+  if (may_math && ppu->addSubscreen) {
+    if (ppu->screenEnabled[1] != 0) {
+      PpuPaintScreen<false>(ppu, y, true, sub_line);
+      rendered_subscreen = true;
+    } else {
+      uint32 *s32 = (uint32 *)sub_line;
+      for (int i = 0; i < 64; i++) s32[i] = 0;
+    }
+  }
+  PT(0);                                        // the subscreen
+  if (may_math)
+    PpuPaintScreen<true>(ppu, y, false, line);
+  else
+    PpuPaintScreen<false>(ppu, y, false, line);
+  PT(1);                                        // the main screen
+
+  PpuWindows cwin;
+  PpuWindows_Calc(&cwin, ppu, 5);
+  static const uint8 kCwBitsMod2[8] = {
+    0x00, 0xff, 0xff, 0x00,
+    0xff, 0x00, 0xff, 0x00,
+  };
+  uint32 cw_clip_math = ((cwin.bits & kCwBitsMod2[ppu->clipMode]) ^ kCwBitsMod2[ppu->clipMode + 4]) |
+                        ((cwin.bits & kCwBitsMod2[ppu->preventMathMode]) ^ kCwBitsMod2[ppu->preventMathMode + 4]) << 8;
+  uint16 *dst = (uint16 *)out8;
+  const uint16 *pal = ppu->palette15;
+  const uint8 *bmap = ppu->bright5;
+  uint32 fixed_color = ppu->fixedColorR | ppu->fixedColorG << 5 | ppu->fixedColorB << 10;
+  uint32 windex = 0;
+  do {
+    uint32 left = cwin.edges[windex], right = cwin.edges[windex + 1];
+    bool keep = (cw_clip_math & 1) != 0;        // clip: the main screen's colour becomes black
+    uint32 clip_color_mask = keep ? 0x1f : 0;
+    uint32 math_enabled_cur = (cw_clip_math & 0x100) ? math_enabled : 0;
+    if (math_enabled_cur == 0 || fixed_color == 0 && !ppu->halfColor && !rendered_subscreen) {
+      if (keep) {
+        PpuPalSpan(dst, line, left, right, pal);
+      } else {
+        for (uint32 i = left; i < right; i++)
+          dst[i] = 0;                           // bmap[0] is 0 at every brightness
+      }
+    } else if (ppu->addSubscreen && !ppu->subtractColor && fixed_color == 0) {
+      // Zelda's usual colour math: main + subscreen (halved or not), no fixed colour - on
+      // packed colours (PpuBlendSpan)
+      uint32 cmask = keep ? 0x7fff : 0;
+      uint16 *d = dst + left;
+      const uint8 *pm = line + left, *ps = sub_line + left;
+      uint32 n = right - left;
+      if (ppu->halfColor)
+        ppu->brightness == 15 ? PpuBlendSpan<true, true>(d, pm, ps, n, ppu->cgram, cmask, bmap)
+                              : PpuBlendSpan<false, true>(d, pm, ps, n, ppu->cgram, cmask, bmap);
+      else
+        ppu->brightness == 15 ? PpuBlendSpan<true, false>(d, pm, ps, n, ppu->cgram, cmask, bmap)
+                              : PpuBlendSpan<false, false>(d, pm, ps, n, ppu->cgram, cmask, bmap);
+    } else {
+      const uint8 *half_color_map = ppu->halfColor ? ppu->bright5Half : bmap;
+      math_enabled_cur |= ppu->addSubscreen << 8 | ppu->subtractColor << 9;
+      for (uint32 i = left; i < right; i++) {
+        uint32 color = ppu->cgram[line[i]], color2;
+        uint32 r = color & clip_color_mask;
+        uint32 g = (color >> 5) & clip_color_mask;
+        uint32 b = (color >> 10) & clip_color_mask;
+        const uint8 *color_map = bmap;
+        if (line[i + 256]) {                    // the math flag of the pixel's layer
+          if (math_enabled_cur & 0x100) {       // addSubscreen ?
+            if (sub_line[i] != 0)
+              color2 = ppu->cgram[sub_line[i]], color_map = half_color_map;
+            else                                // don't halve if addSubscreen && backdrop
+              color2 = fixed_color;
+          } else {
+            color2 = fixed_color, color_map = half_color_map;
+          }
+          uint32 r2 = (color2 & 0x1f), g2 = ((color2 >> 5) & 0x1f), b2 = ((color2 >> 10) & 0x1f);
+          if (math_enabled_cur & 0x200) {       // subtractColor?
+            r = (r >= r2) ? r - r2 : 0;
+            g = (g >= g2) ? g - g2 : 0;
+            b = (b >= b2) ? b - b2 : 0;
+          } else {
+            r += r2;
+            g += g2;
+            b += b2;
+          }
+        }
+        dst[i] = (uint16)(color_map[b] << 10 | color_map[g] << 5 | color_map[r]);
+      }
+    }
+  } while (cw_clip_math >>= 1, ++windex < cwin.nr);
+  PT(2);                                        // the colour window, math, output
+#ifdef Z32_PPU_TIMING
+  if (ppu == g_ppu_time_ctx) g_ppu_t[3]++;
+#endif
 }
 
 static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
   if (ppu->forcedBlank) {
     uint8 *dst = &ppu->renderBuffer[(y - 1) * ppu->renderPitch];
-    size_t n = (ppu->renderFlags & kPpuRenderFlags_Index8 ? 1 : sizeof(uint32)) * (256 + ppu->extraLeftRight * 2);
+    size_t n = (ppu->renderFlags & kPpuRenderFlags_Index8 ? 1 : ppu->renderFlags & kPpuRenderFlags_Rgb15 ? 2 : sizeof(uint32)) * (256 + ppu->extraLeftRight * 2);
     // Z32X: whole words only - the 32X frame buffer drops byte writes of 0 (memset ends in bytes)
     // (volatile: GCC would turn a plain zeroing loop back into a memset call)
     for (volatile uint32 *d32 = (uint32 *)dst, *e32 = (uint32 *)(dst + n); d32 != e32; d32++)
@@ -944,7 +1173,8 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
     return;
   }
 
-  if ((ppu->renderFlags & kPpuRenderFlags_Index8) && ppu->mode == 1 && !(ppu->mosaicEnabled & 7)) {
+  if ((ppu->renderFlags & (kPpuRenderFlags_Index8 | kPpuRenderFlags_Rgb15)) && !(ppu->renderFlags & kPpuRenderFlags_NoPaint) &&
+      ppu->mode == 1 && !(ppu->mosaicEnabled & 7)) {
     PpuPaintLine(ppu, y);                       // Z32X: the 32X's common case
     return;
   }
@@ -993,6 +1223,13 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
   uint32 *dst = (uint32*)&ppu->renderBuffer[(y - 1) * ppu->renderPitch], *dst_org = dst;
   
   dst += (ppu->extraLeftRight - ppu->extraLeftCur);
+  // Z32X: Rgb15 - 16-bit pixels, the 5-bit brightness tables
+  const bool rgb15 = (ppu->renderFlags & kPpuRenderFlags_Rgb15) != 0;
+  uint16 *dst16 = (uint16 *)dst_org;
+  uint8 *bmap = rgb15 ? ppu->bright5 : ppu->brightnessMult;
+  uint8 *bmap_half = rgb15 ? ppu->bright5Half : ppu->brightnessMultHalf;
+#define PUT_PIXEL(m, r, g, b) do { if (rgb15) *dst16++ = (uint16)((m)[b] << 10 | (m)[g] << 5 | (m)[r]); \
+                                   else dst[0] = (m)[b] | (m)[g] << 8 | (m)[r] << 16; } while (0)
 
   uint32 windex = 0;
   do {
@@ -1006,12 +1243,10 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
       uint32 i = left;
       do {
         uint32 color = ppu->cgram[ppu->bgBuffers[0].data[i] & 0xff];
-        dst[0] = ppu->brightnessMult[color & clip_color_mask] << 16 |
-                 ppu->brightnessMult[(color >> 5) & clip_color_mask] << 8 |
-                 ppu->brightnessMult[(color >> 10) & clip_color_mask];
+        PUT_PIXEL(bmap, color & clip_color_mask, (color >> 5) & clip_color_mask, (color >> 10) & clip_color_mask);
       } while (dst++, ++i < right);
     } else {
-      uint8 *half_color_map = ppu->halfColor ? ppu->brightnessMultHalf : ppu->brightnessMult;
+      uint8 *half_color_map = ppu->halfColor ? bmap_half : bmap;
       // Store this in locals
       math_enabled_cur |= ppu->addSubscreen << 8 | ppu->subtractColor << 9;
       // Need to check for each pixel whether to use math or not based on the main screen layer.
@@ -1022,7 +1257,7 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
         uint32 r = color & clip_color_mask;
         uint32 g = (color >> 5) & clip_color_mask;
         uint32 b = (color >> 10) & clip_color_mask;
-        uint8 *color_map = ppu->brightnessMult;
+        uint8 *color_map = bmap;
         if (math_enabled_cur & (1 << main_layer)) {
           if (math_enabled_cur & 0x100) {  // addSubscreen ?
             if ((ppu->bgBuffers[1].data[i] & 0xff) != 0)
@@ -1043,15 +1278,16 @@ static NOINLINE void PpuDrawWholeLine(Ppu *ppu, uint y) {
             b += b2;
           }
         }
-        dst[0] = color_map[b] | color_map[g] << 8 | color_map[r] << 16;
+        PUT_PIXEL(color_map, r, g, b);
       } while (dst++, ++i < right);
     }
   } while (cw_clip_math >>= 1, ++windex < cwin.nr);
 
+#undef PUT_PIXEL
   // Clear out stuff on the sides.
-  if (ppu->extraLeftRight - ppu->extraLeftCur != 0)
+  if (!rgb15 && ppu->extraLeftRight - ppu->extraLeftCur != 0)
     memset(dst_org, 0, sizeof(uint32) * (ppu->extraLeftRight - ppu->extraLeftCur));
-  if (ppu->extraLeftRight - ppu->extraRightCur != 0)
+  if (!rgb15 && ppu->extraLeftRight - ppu->extraRightCur != 0)
     memset(dst_org + (256 + ppu->extraLeftRight * 2 - (ppu->extraLeftRight - ppu->extraRightCur)), 0,
         sizeof(uint32) * (ppu->extraLeftRight - ppu->extraRightCur));
 }

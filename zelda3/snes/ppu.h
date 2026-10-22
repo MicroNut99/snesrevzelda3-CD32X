@@ -56,6 +56,11 @@ enum {
   // Z32X (CD32X port): each pixel is one byte, the CGRAM index (the 32X's palette is the
   // SNES CGRAM, same 15-bit format). Colour math is not applied in this mode.
   kPpuRenderFlags_Index8 = 16,
+  // Z32X: each pixel is 16 bits, the SNES colour after colour math and brightness as 15-bit BGR
+  // (the 32X's direct colour mode); brightness as level * b / 15 on the 5-bit levels
+  kPpuRenderFlags_Rgb15 = 32,
+  // Z32X test: never the painted mode-1 line (the depth-buffer path is the reference)
+  kPpuRenderFlags_NoPaint = 64,
 };
 
 
@@ -136,7 +141,9 @@ struct Ppu {
   // Z32X: what ppu_evaluateSprites put on this line: the priorities used (bit p), the x span
   uint8_t objLevels;
   int16_t objMinX, objMaxX;
-  uint32_t lineBuf[64];                 // Z32X: the line as 8-bit CGRAM indices (PpuPaintLine)
+  // Z32X: PpuPaintLine's line: [0..255] the main screen's CGRAM indices, [256..511] the main
+  // screen's layer per pixel (colour-math lines only), [512..767] the subscreen's indices
+  uint32_t lineBuf[64 * 3];
   PpuPaintList paintHi[3];              // Z32X: BG1..3's high-priority tiles of the line
   uint8_t objList[128];
   uint8_t objHigh[128];
@@ -144,6 +151,10 @@ struct Ppu {
   // store 31 extra entries to remove the need for clamp
   uint8_t brightnessMult[32 + 31];
   uint8_t brightnessMultHalf[32 * 2];
+  // Z32X: the same for 5-bit levels (kPpuRenderFlags_Rgb15), and the CGRAM through them
+  uint8_t bright5[32 + 31];
+  uint8_t bright5Half[32 * 2];
+  uint16_t palette15[256];
   uint16_t cgram[0x100];
   uint8_t mosaicModulo[kPpuXPixels];
   uint32_t colorMapRgb[256];
@@ -170,6 +181,7 @@ void PpuBeginDrawing(Ppu *ppu, uint8_t *buffer, size_t pitch, uint32_t render_fl
 
 // Returns the current render scale, 1x = 256px, 2x=512px, 4x=1024px
 int PpuGetCurrentRenderScale(Ppu *ppu, uint32_t render_flags);
+bool PpuNeedsDirectColour(Ppu *ppu);    // Z32X
 
 void PpuSetMode7PerspectiveCorrection(Ppu *ppu, int low, int high);
 void PpuSetExtraSideSpace(Ppu *ppu, int left, int right, int bottom);
