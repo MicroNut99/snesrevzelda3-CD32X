@@ -25,8 +25,8 @@ static const uint8 kTagalongLayerBits[4] = {0x20, 0x10, 0x30, 0x20};
 static const uint8 kBombos_Sfx[8] = {0x80, 0x80, 0x80, 0, 0, 0x40, 0x40, 0x40};
 const uint8 kBomb_Tab0[11] = {0xA0, 6, 4, 4, 4, 4, 4, 6, 6, 6, 6};
 
-#define swordbeam_temp_x (*(uint16*)(g_ram+0x1580E))
-#define swordbeam_temp_y (*(uint16*)(g_ram+0x15810))
+#define swordbeam_temp_x (*(le16*)(g_ram+0x1580E))
+#define swordbeam_temp_y (*(le16*)(g_ram+0x15810))
 #define swordbeam_arr ((uint8*)(g_ram+0x15800))
 #define swordbeam_var1 (*(uint8*)(g_ram+0x15804))
 #define swordbeam_var2 (*(uint8*)(g_ram+0x15808))
@@ -76,13 +76,13 @@ static const uint8 kMagicPowder_Tab0[40] = {
 };
 #define ether_arr1 ((uint8*)(g_ram+0x15800))
 #define ether_var2 (*(uint8*)(g_ram+0x15808))
-#define ether_y2 (*(uint16*)(g_ram+0x1580A))
-#define ether_y_adjusted (*(uint16*)(g_ram+0x1580C))
-#define ether_x2 (*(uint16*)(g_ram+0x1580E))
-#define ether_y3 (*(uint16*)(g_ram+0x15810))
+#define ether_y2 (*(le16*)(g_ram+0x1580A))
+#define ether_y_adjusted (*(le16*)(g_ram+0x1580C))
+#define ether_x2 (*(le16*)(g_ram+0x1580E))
+#define ether_y3 (*(le16*)(g_ram+0x15810))
 #define ether_var1 (*(uint8*)(g_ram+0x15812))
-#define ether_y (*(uint16*)(g_ram+0x15813))
-#define ether_x (*(uint16*)(g_ram+0x15815))
+#define ether_y (*(le16*)(g_ram+0x15813))
+#define ether_x (*(le16*)(g_ram+0x15815))
 static const uint8 kEther_BlitzOrb_Char[8] = {0x48, 0x48, 0x4a, 0x4a, 0x4c, 0x4c, 0x4e, 0x4e};
 static const uint8 kEther_BlitzOrb_Flags[8] = {0x3c, 0x7c, 0x3c, 0x7c, 0x3c, 0x7c, 0x3c, 0x7c};
 static const uint8 kEther_BlitzSegment_Char[4] = {0x40, 0x42, 0x44, 0x46};
@@ -2396,8 +2396,8 @@ void EtherSpell_HandleLightningStroke(int k) {  // 88ab63
   Ancilla_MoveY(k);
   uint16 y = Ancilla_GetY(k);
 
-  if (BYTE_N(ether_y_adjusted) != (y & 0xf0)) {
-    BYTE_N(ether_y_adjusted) = y & 0xf0;
+  if (BYTE_LE(ether_y_adjusted) != (y & 0xf0)) {
+    BYTE_LE(ether_y_adjusted) = y & 0xf0;
     ancilla_arr25[k]++;
   }
   if (y < 0xe000 && ether_y2 < 0xe000 && ether_y2 <= y) {

@@ -13,7 +13,7 @@ typedef struct ItemBoxGfx {
   uint16 v[4];
 } ItemBoxGfx;
 
-static void Hud_DrawItem(uint16 *dst, const ItemBoxGfx *src);
+static void Hud_DrawItem(le16 *dst, const ItemBoxGfx *src);
 static bool Hud_DoWeHaveThisItem(uint8 item);
 static void Hud_EquipPrevItem(uint8 *item);
 static void Hud_EquipNextItem(uint8 *item);
@@ -484,7 +484,7 @@ void Hud_Module_Run() {  // 8ddd36
 }
 
 void Hud_ClearTileMap() {  // 8ddd5a
-  uint16 *target = (uint16 *)&g_ram[0x1000];
+  le16 *target = (le16 *)&g_ram[0x1000];
   for (int i = 0; i < 1024; i++)
     target[i] = 0x207f;
   sound_effect_2 = 17;
@@ -727,7 +727,7 @@ void Hud_GotoBottleMenu() {  // 8ddffb
 
 void Hud_InitBottleMenu() {  // 8de002
   int r = bottle_menu_expand_row;
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
+  le16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
   for (int i = 21; i <= 30; i++)
     dst[HUDXY(i, 11 + r)] = 0x207f;
 
@@ -745,10 +745,10 @@ void Hud_ExpandBottleMenu() {  // 8de08c
   static const uint16 kBottleMenuBottom[] = { 0xA8FB, 0xA8F9, 0xA8F9, 0xA8F9, 0xA8F9, 0xA8F9, 0xA8F9, 0xA8F9, 0xA8F9, 0xE8FB };
 
   int r = bottle_menu_expand_row;
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
-  memcpy(&dst[HUDXY(21, 11 + r)], kBottleMenuTop, sizeof(uint16) * 10);
-  memcpy(&dst[HUDXY(21, 12 + r)], kBottleMenuTop2, sizeof(uint16) * 10);
-  memcpy(&dst[HUDXY(21, 29)], kBottleMenuBottom, sizeof(uint16) * 10);
+  le16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
+  CopyWordsToLe(&dst[HUDXY(21, 11 + r)], kBottleMenuTop, 10);
+  CopyWordsToLe(&dst[HUDXY(21, 12 + r)], kBottleMenuTop2, 10);
+  CopyWordsToLe(&dst[HUDXY(21, 29)], kBottleMenuBottom, 10);
 
   if (sign8(--bottle_menu_expand_row))
     overworld_map_state++;
@@ -796,28 +796,28 @@ void Hud_BottleMenu() {  // 8de0df
   }
 }
 
-static void Hud_DrawItem(uint16 *dst, const ItemBoxGfx *src) {  // new
+static void Hud_DrawItem(le16 *dst, const ItemBoxGfx *src) {  // new
   dst[0] = src->v[0];
   dst[1] = src->v[1];
   dst[32] = src->v[2];
   dst[33] = src->v[3];
 }
 
-static void Hud_DrawNxN(uint16 *dst, const uint16 *src, int w, int h) {  // new
+static void Hud_DrawNxN(le16 *dst, const uint16 *src, int w, int h) {  // new
   for (int y = 0; y < h; y++) {
-    memcpy(dst, src, sizeof(uint16) * w);
+    CopyWordsToLe(dst, src, w);
     dst += 32, src += w;
   }
 }
 
-static void Hud_Copy2x2(uint16 *dst, uint16 *src) {  // new
+static void Hud_Copy2x2(le16 *dst, le16 *src) {  // new
   dst[0] = src[0];
   dst[1] = src[1];
   dst[32] = src[32];
   dst[33] = src[33];
 }
 
-static void Hud_DrawBox(uint16 *dst, int x1, int y1, int x2, int y2, uint8 palette) {  // new
+static void Hud_DrawBox(le16 *dst, int x1, int y1, int x2, int y2, uint8 palette) {  // new
   uint16 t;
 
   t = 0x20fb | palette << 10;
@@ -844,7 +844,7 @@ static void Hud_DrawBox(uint16 *dst, int x1, int y1, int x2, int y2, uint8 palet
   }
 }
 
-static void Hud_DrawFlashingCircle(uint16 *p, uint8 palette) {  // new
+static void Hud_DrawFlashingCircle(le16 *p, uint8 palette) {  // new
   int pp = palette << 10;
   p[HUDXY(0, -1)] = pp | 0x2061;
   p[HUDXY(1, -1)] = pp | 0x2061 | 0x4000;
@@ -861,7 +861,7 @@ static void Hud_DrawFlashingCircle(uint16 *p, uint8 palette) {  // new
 }
 
 void Hud_DrawBottleMenu() {  // 8def67
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
+  le16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
   Hud_DrawBox(dst, 21, 11, 30, 29, 2);
   for (int i = 0; i < 4; i++)
     Hud_DrawItem(dst + HUDXY(25, 13 + i * 4), &kHudItemBottles[link_bottle_info[i]]);
@@ -881,7 +881,7 @@ void Hud_DrawBottleMenu_Update() {  // 8de17f
 }
 
 void Hud_EraseBottleMenu() {  // 8de2fd
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
+  le16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
   int r = bottle_menu_expand_row;
   for (int i = 0; i < 10; i++)
     dst[HUDXY(21 + i, 11 + r)] = 0x207f;
@@ -942,7 +942,7 @@ static void CopyTilesForSwitchLR(int switch_lr) {
       PV(1,1,1,3,3,1,1,1),
       PV(1,1,1,1,1,1,1,3)
     };
-    memcpy(&g_zenv.vram[0x7000 + 0xc * 8], kBytesForNewTile0xC_TopOfR, sizeof(kBytesForNewTile0xC_TopOfR));
+    CopyWordsToLe(&g_zenv.vram[0x7000 + 0xc * 8], kBytesForNewTile0xC_TopOfR, countof(kBytesForNewTile0xC_TopOfR));
 
     static const uint16 kBytesForNewTile0xD_BottomofR[8] = {
       PV(1,1,1,1,1,1,3,3),
@@ -954,7 +954,7 @@ static void CopyTilesForSwitchLR(int switch_lr) {
       PV(1,1,1,3,3,1,1,1),
       PV(1,1,1,3,3,1,1,1)
     };
-    memcpy(&g_zenv.vram[0x7000 + 0xd * 8], kBytesForNewTile0xD_BottomofR, sizeof(kBytesForNewTile0xD_BottomofR));
+    CopyWordsToLe(&g_zenv.vram[0x7000 + 0xd * 8], kBytesForNewTile0xD_BottomofR, countof(kBytesForNewTile0xD_BottomofR));
   } else if (switch_lr == 2) {
     static const uint16 kBytesForNewTile0xE_TopOfL[8] = {
       PV(1,1,1,3,3,3,3,3),
@@ -966,7 +966,7 @@ static void CopyTilesForSwitchLR(int switch_lr) {
       PV(1,1,1,3,3,3,3,3),
       PV(1,1,1,3,3,3,3,3)
     };
-    memcpy(&g_zenv.vram[0x7000 + 0xe * 8], kBytesForNewTile0xE_TopOfL, sizeof(kBytesForNewTile0xE_TopOfL));
+    CopyWordsToLe(&g_zenv.vram[0x7000 + 0xe * 8], kBytesForNewTile0xE_TopOfL, countof(kBytesForNewTile0xE_TopOfL));
 
     static const uint16 kBytesForNewTile0xF_BottomofL[8] = {
       PV(1,1,1,3,3,3,3,3),
@@ -978,7 +978,7 @@ static void CopyTilesForSwitchLR(int switch_lr) {
       PV(1,1,1,1,1,1,1,1),
       PV(1,1,1,1,1,1,1,1)
     };
-    memcpy(&g_zenv.vram[0x7000 + 0xf * 8], kBytesForNewTile0xF_BottomofL, sizeof(kBytesForNewTile0xF_BottomofL));
+    CopyWordsToLe(&g_zenv.vram[0x7000 + 0xf * 8], kBytesForNewTile0xF_BottomofL, countof(kBytesForNewTile0xF_BottomofL));
   }
 #undef PV
 }
@@ -986,7 +986,7 @@ static void CopyTilesForSwitchLR(int switch_lr) {
 static const uint8 kSwitchLR_palettes[] = { 7, 3, 4, 4 };
 
 void Hud_DrawYButtonItems() {  // 8de3d9
-  uint16 *dst = uvram_screen.row[0].col;
+  le16 *dst = uvram_screen.row[0].col;
   int x = kNewStyleInventory ? 0 : 1;
 
   int btn_index = GetCurrentItemButtonIndex();
@@ -1027,7 +1027,7 @@ void Hud_DrawAbilityBox() {  // 8de6b6
     0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d5b, 0x2d58, 0x2d55, 0x2d63, 0x2d28,
     0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2cf5, 0x2d5b, 0x2d58, 0x2d55, 0x2d63, 0x2d29,
   };
-  uint16 *dst = uvram_screen.row[0].col;
+  le16 *dst = uvram_screen.row[0].col;
   int x = kNewStyleInventory ? 0 : 1;
 
   Hud_DrawBox(dst, x, 21, 19, 29, 1);
@@ -1087,7 +1087,7 @@ void Hud_DrawProgressIcons_Pendants() {  // 8de9d3
     {{0x313b, 0x313c, 0x313d, 0x313e}},
     {{0x3d2b, 0x3d2c, 0x3d2d, 0x3d2e}},
   };
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? HUDXY(22, 11) : HUDXY(21, 11));
+  le16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? HUDXY(22, 11) : HUDXY(21, 11));
   Hud_DrawNxN(dst, kProgressIconPendantsBg, 10, 9);
   Hud_DrawItem(dst + HUDXY(4, 3), &kHudPendants0[(link_which_pendants >> 0) & 1]);
   Hud_DrawItem(dst + HUDXY(2, 6), &kHudPendants1[(link_which_pendants >> 1) & 1]);
@@ -1107,7 +1107,7 @@ void Hud_DrawProgressIcons_Crystals() {  // 8dea62
     0xa8fb, 0xa8f9, 0xa8f9, 0xa8f9, 0xa8f9, 0xa8f9, 0xa8f9, 0xa8f9, 0xa8f9, 0xe8fb,
   };
 
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? HUDXY(22, 11) : HUDXY(21, 11));
+  le16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? HUDXY(22, 11) : HUDXY(21, 11));
   Hud_DrawNxN(dst, kProgressIconCrystalsBg, 10, 9);
 
   uint8 f = link_has_crystals;
@@ -1200,8 +1200,8 @@ void Hud_DrawSelectedYButtonItem() {  // 8deb3a
   };
 #undef L
 
-  uint16 *dst_org = uvram_screen.row[0].col;
-  uint16 *dst_box = dst_org + (kNewStyleInventory ? 1 : 0);
+  le16 *dst_org = uvram_screen.row[0].col;
+  le16 *dst_box = dst_org + (kNewStyleInventory ? 1 : 0);
   
   int btn_index = GetCurrentItemButtonIndex();
   int item = *GetCurrentItemButtonPtr(btn_index);
@@ -1210,7 +1210,7 @@ void Hud_DrawSelectedYButtonItem() {  // 8deb3a
   // Display either the current item or the item assigned
   // to the x, l, or r key.
   if (item != 0) {
-    uint16 *p = dst_org + kHudItemInVramPtr[Hud_GetItemPosition(item)];
+    le16 *p = dst_org + kHudItemInVramPtr[Hud_GetItemPosition(item)];
     Hud_Copy2x2(dst_box + HUDXY(25, 6), p);
     if (timer_for_flashing_circle & 0x10)
       Hud_DrawFlashingCircle(p, kSwitchLR_palettes[btn_index]);
@@ -1240,7 +1240,7 @@ void Hud_DrawSelectedYButtonItem() {  // 8deb3a
 }
 
 void Hud_DrawEquipmentBox() {  // 8ded29
-  uint16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
+  le16 *dst = uvram_screen.row[0].col + (kNewStyleInventory ? 1 : 0);
 
   Hud_DrawBox(dst, 21, 21, 30, 29, 2);
 
@@ -1252,8 +1252,8 @@ void Hud_DrawEquipmentBox() {  // 8ded29
     0x2479, 0x247a, 0x247b, 0x247c, 0x248c, 0x24f5, 0x24f5, 0x24f5,
     0x2469, 0x246a, 0x246b, 0x246c, 0x246d, 0x246e, 0x246f, 0x24f5,
   };
-  memcpy(dst + HUDXY(22, 22), &kHudEquipmentDungeonItemText[0], 8 * sizeof(uint16));
-  memcpy(dst + HUDXY(22, 26), &kHudEquipmentDungeonItemText[8], 8 * sizeof(uint16));
+  CopyWordsToLe(dst + HUDXY(22, 22), &kHudEquipmentDungeonItemText[0], 8);
+  CopyWordsToLe(dst + HUDXY(22, 26), &kHudEquipmentDungeonItemText[8], 8);
 
   static const ItemBoxGfx kHudItemHeartPieces[4] = {
     {{0x2484, 0x6484, 0x2485, 0x6485}},
@@ -1315,7 +1315,7 @@ void Hud_AnimateHeartRefill() {  // 8df14f
   if (--animate_heart_refill_countdown)
     return;
   uint16 n = ((uint16)((link_health_current & ~7) - 1) >> 3) << 1;
-  uint16 *p = hud_tile_indices_buffer + HUDXY(20, 1);
+  le16 *p = hud_tile_indices_buffer + HUDXY(20, 1);
   if (n >= 20) {
     n -= 20;
     p += 0x20;
@@ -1361,7 +1361,7 @@ static void Hud_UpdateItemBox() {  // 8dfafd
     Hud_DrawItem(&hud_tile_indices_buffer[HUDXY(5, 1)], Hud_GetIconForItem(hud_cur_item));
 }
 
-static void Hud_UpdateHearts_Inner(uint16 *dst, const uint16 *src, int n) {  // 8dfdab
+static void Hud_UpdateHearts_Inner(le16 *dst, const uint16 *src, int n) {  // 8dfdab
   int x = 0;
   while (n > 0) {
     if (x >= 10) {
@@ -1374,9 +1374,9 @@ static void Hud_UpdateHearts_Inner(uint16 *dst, const uint16 *src, int n) {  // 
   }
 }
 
-static void DrawHudComponents(uint16 *dst, const uint16 *src, int w, int h) {
+static void DrawHudComponents(le16 *dst, const uint16 *src, int w, int h) {
   do {
-    memcpy(dst, src, w * sizeof(uint16));
+    CopyWordsToLe(dst, src, w);
   } while (src += w, dst += 32, --h);
 }
 
@@ -1389,7 +1389,7 @@ static void Hud_Update_Hearts() {  // 8dfb94
 }
 
 static void Hud_Update_Magic() {  // 8dfc09
-  uint16 *dst = &hud_tile_indices_buffer[HUDXY(2, 0)];
+  le16 *dst = &hud_tile_indices_buffer[HUDXY(2, 0)];
   if (link_magic_consumption >= 1) {
     dst[HUDXY(0, 0)] = 0x28F7;
     dst[HUDXY(1, 0)] = 0x2851;
@@ -1418,9 +1418,9 @@ static void Hud_Update_Inventory() {  // 8dfc09
     0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f, 0x207f,
   };
 
-  uint16 *dst = &hud_tile_indices_buffer[HUDXY(8, 0)];
-  memcpy(dst + HUDXY(0, 0), kHudInventoryBg +  0 + inv_offs, 12 * sizeof(uint16));
-  memcpy(dst + HUDXY(0, 1), kHudInventoryBg + 13 + inv_offs, 12 * sizeof(uint16));
+  le16 *dst = &hud_tile_indices_buffer[HUDXY(8, 0)];
+  CopyWordsToLe(dst + HUDXY(0, 0), kHudInventoryBg +  0 + inv_offs, 12);
+  CopyWordsToLe(dst + HUDXY(0, 1), kHudInventoryBg + 13 + inv_offs, 12);
 
   if (link_item_bow) {
     if (link_item_bow >= 3) {

@@ -2,7 +2,7 @@
 
 
 bool Intro_CheckCksum(const uint8 *s);
-uint16 *SelectFile_Func1();
+le16 *SelectFile_Func1();
 void SelectFile_Func5_DrawOams(int k);
 void SelectFile_Func6_DrawOams2(int k);
 void SelectFile_Func17(int k);

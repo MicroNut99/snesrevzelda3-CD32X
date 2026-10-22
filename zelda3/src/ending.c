@@ -17,7 +17,7 @@
 
 static const uint16 kPolyhedralPalette[8] = { 0, 0x14d, 0x1b0, 0x1f3, 0x256, 0x279, 0x2fd, 0x35f };
 
-#define ending_which_dung (*(uint16*)(g_ram+0xcc))
+#define ending_which_dung (*(le16*)(g_ram+0xcc))
 #define kPolyThreadRam (g_ram + 0x1f00)
 static const int8 kIntroSprite0_Xvel[3] = { 1, 0, -1 };
 static const int8 kIntroSprite0_Yvel[3] = { -1, 1, -1 };
@@ -116,7 +116,7 @@ static PlayerHandlerFunc *const kEndSequence_Funcs[39] = {
 &Credits_FadeInTheEnd,
 &Credits_HangForever,
 };
-#define intro_sword_ypos WORD(g_ram[0xc8])
+#define intro_sword_ypos LE16(g_ram + 0xc8)
 #define intro_sword_18 g_ram[0xca]
 #define intro_sword_19 g_ram[0xcb]
 #define intro_sword_20 g_ram[0xcc]
@@ -696,7 +696,7 @@ void Intro_InitGfx_Helper() {  // 8cc36f
 }
 
 void LoadTriforceSpritePalette() {  // 8cc3bd
-  memcpy(main_palette_buffer + 0xd0, kPolyhedralPalette, 16);
+  CopyWordsToLe(main_palette_buffer + 0xd0, kPolyhedralPalette, 8);
   flag_update_cgram_in_nmi++;
 }
 
@@ -2335,7 +2335,7 @@ void Credits_HandleCameraScrollControl() {  // 8eaea6
   if (link_y_vel != 0) {
     uint8 yvel = link_y_vel;
     BG2VOFS_copy2 += (int8)yvel;
-    uint16 *which = sign8(yvel) ? &overworld_unk1 : &overworld_unk1_neg;
+    le16 *which = sign8(yvel) ? &overworld_unk1 : &overworld_unk1_neg;
     *which += abs8(yvel);
     if (!sign16(*which - 0x10)) {
       *which -= 0x10;
@@ -2367,7 +2367,7 @@ void Credits_HandleCameraScrollControl() {  // 8eaea6
   if (link_x_vel != 0) {
     uint8 xvel = link_x_vel;
     BG2HOFS_copy2 += (int8)xvel;
-    uint16 *which = sign8(xvel) ? &overworld_unk3 : &overworld_unk3_neg;
+    le16 *which = sign8(xvel) ? &overworld_unk3 : &overworld_unk3_neg;
     *which += abs8(xvel);
     if (!sign16(*which - 0x10)) {
       *which -= 0x10;
@@ -2519,7 +2519,7 @@ void Credits_AddNextAttribution() {  // 8ebe24
   static const uint16 kEnding_Digits_ScrollY[14] = { 0x290, 0x298, 0x2a0, 0x2a8, 0x2b0, 0x2ba, 0x2c2, 0x2ca, 0x2d2, 0x2da, 0x2e2, 0x2ea, 0x2f2, 0x310 };
   static const uint16 kEnding_Credits_DigitChar[2] = { 0x3ce6, 0x3cf6 };
 
-  uint16 *dst = vram_upload_data + (vram_upload_offset >> 1);
+  le16 *dst = vram_upload_data + (vram_upload_offset >> 1);
 
   dst[0] = swap16(R16);
   dst[1] = 0x3e40;
@@ -2561,13 +2561,13 @@ void Credits_AddNextAttribution() {  // 8ebe24
   if (!(R16 & 0x3ff))
     R16 = (R16 & 0x6800) ^ 0x800;
   vram_upload_offset = (char *)dst - (char *)vram_upload_data;
-  BYTE_N(*dst) = 0xff;
+  BYTE_LE(*dst) = 0xff;
   nmi_load_bg_from_vram = 1;
 }
 
 void Credits_AddEndingSequenceText() {  // 8ec303
 
-  uint16 *dst = vram_upload_data;
+  le16 *dst = vram_upload_data;
   dst[0] = 0x60;
   dst[1] = 0xfe47;
   dst[2] = kEnding_MapData[159];
@@ -2586,7 +2586,7 @@ void Credits_AddEndingSequenceText() {  // 8ec303
   } while (curo != endo);
 
   vram_upload_offset = (char *)dst - (char *)vram_upload_data;
-  BYTE_N(*dst) = 0xff;
+  BYTE_LE(*dst) = 0xff;
   nmi_load_bg_from_vram = 1;
 }
 

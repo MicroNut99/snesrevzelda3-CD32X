@@ -474,8 +474,8 @@ static HandlerFuncK *const kSprite_ExecuteSingle[12] = {
   &SpriteModule_Stunned,
 };
 // it's not my job to tell you what to think, my job is to think about what you tell me'
-#define R0 WORD(g_ram[0])
-#define R2 WORD(g_ram[2])
+#define R0 LE16(g_ram + 0)
+#define R2 LE16(g_ram + 2)
 static const uint8 kSpawnSecretItems[22] = {
   0xd9, 0x3e, 0x79, 0xd9, 0xdc, 0xd8, 0xda, 0xe4, 0xe1, 0xdc, 0xd8, 0xdf, 0xe0, 0xb, 0x42, 0xd3,
   0x41, 0xd4, 0xd9, 0xe3, 0xd8, 0,
@@ -1150,7 +1150,7 @@ void Sprite_Main() {  // 868328
 }
 
 void Oam_ResetRegionBases() {  // 8683d3
-  memcpy(oam_region_base, kOam_ResetRegionBases, 12);
+  CopyWordsToLe(oam_region_base, kOam_ResetRegionBases, 6);
 }
 
 void Sprite_TimersAndOam(int k) {  // 8683f2

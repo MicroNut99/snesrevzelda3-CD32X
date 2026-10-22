@@ -48,8 +48,8 @@ enum {
   kFeatures0_DimFlashes = 65536,
 };
 
-#define enhanced_features0 (*(uint32*)(g_ram+0x64c))
-#define msu_curr_sample (*(uint32*)(g_ram+0x650))
+#define enhanced_features0 (*(le32*)(g_ram+0x64c))
+#define msu_curr_sample (*(le32*)(g_ram+0x650))
 #define msu_volume (*(uint8*)(g_ram+0x654))
 #define msu_track (*(uint8*)(g_ram+0x655))
 #define hud_inventory_order ((uint8*)(g_ram + 0x225)) // 4x6 bytes

@@ -1439,8 +1439,8 @@
 
 
 typedef struct LE_SSO MovableBlockData {
-  uint16 room;
-  uint16 tilemap;
+  U16LE room;
+  U16LE tilemap;
 } MovableBlockData;
 
 typedef struct OamEntSigned {
@@ -1456,8 +1456,8 @@ typedef struct OamEntSigned {
 
 typedef struct LE_SSO RoomBounds {
   union LE_SSO {
-    struct LE_SSO { uint16 a0, b0, a1, b1; };
-    uint16 v[4];
+    struct LE_SSO { U16LE a0, b0, a1, b1; };
+    U16LE v[4];
   };
 } RoomBounds;
 #define room_bounds_y (*(RoomBounds*)(g_ram+0x600))
@@ -1465,7 +1465,7 @@ typedef struct LE_SSO RoomBounds {
 
 
 typedef struct LE_SSO OwScrollVars {
-  uint16 ystart, yend, xstart, xend;
+  U16LE ystart, yend, xstart, xend;
 } OwScrollVars;
 
 
@@ -1488,24 +1488,24 @@ extern const uint16 kOverworld_OffsetBaseX[64];
 
 
 typedef struct LE_SSO MirrorHdmaVars {
-  uint16 var0;
-  uint16 var1[2];
-  uint16 var3[2];
-  uint16 var5;
-  uint16 var6;
-  uint16 var7;
-  uint16 var8;
-  uint16 var9;
-  uint16 var10;
-  uint16 var11;
-  uint16 pad;
+  U16LE var0;
+  U16LE var1[2];
+  U16LE var3[2];
+  U16LE var5;
+  U16LE var6;
+  U16LE var7;
+  U16LE var8;
+  U16LE var9;
+  U16LE var10;
+  U16LE var11;
+  U16LE pad;
   uint8 ctr2, ctr;
 } MirrorHdmaVars;
 #define mirror_vars (*(MirrorHdmaVars*)(g_ram+0x6A0))
 
 
 typedef struct LE_SSO UploadVram_Row {
-  uint16 col[32];
+  U16LE col[32];
 } UploadVram_Row;
 
 typedef struct LE_SSO UploadVram_32x32 {
@@ -1514,7 +1514,7 @@ typedef struct LE_SSO UploadVram_32x32 {
 
 typedef struct LE_SSO UploadVram_3 {
   uint8 pad[256];
-  uint16 data[4];
+  U16LE data[4];
 } UploadVram_3;
 
 #define uvram (*(UploadVram_3*)(&g_ram[0x1000]))

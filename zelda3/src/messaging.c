@@ -260,7 +260,7 @@ void SaveGameFile() {  // 80894a
   memcpy(g_zenv.sram + offs + 0xf00, save_dung_info, 0x500);
   uint16 t = 0x5a5a;
   for (int i = 0; i < 0x4fe; i += 2)
-    t -= *(uint16 *)((char *)save_dung_info + i);
+    t -= *(le16 *)((char *)save_dung_info + i);
   word_7EF4FE = t;
   LE16(&(g_zenv.sram[offs + 0x4fe])) = t;
   LE16(&(g_zenv.sram[offs + 0x4fe + 0xf00])) = t;
@@ -268,10 +268,10 @@ void SaveGameFile() {  // 80894a
 }
 
 void TransferMode7Characters() {  // 80e399
-  uint16 *dst = g_zenv.vram;
+  le16 *dst = g_zenv.vram;
   const uint8 *src = kOverworldMapGfx;
   for (int i = 0; i != 0x4000; i++)
-    HIBYTE_N(dst[i]) = src[i];
+    HIBYTE_LE(dst[i]) = src[i];
 }
 
 void Module0E_Interface() {  // 80f800
@@ -1276,9 +1276,9 @@ void WorldMap_SetUpHDMA() {  // 8abc96
 }
 
 void WorldMap_FillTilemapWithEF() {  // 8abda5
-  uint16 *dst = g_zenv.vram;
+  le16 *dst = g_zenv.vram;
   for (int i = 0; i != 0x4000; i++)
-    BYTE_N(dst[i]) = 0xef;
+    BYTE_LE(dst[i]) = 0xef;
 }
 
 void WorldMap_HandleSprites() {  // 8abf66
@@ -2343,7 +2343,7 @@ void Text_Render() {  // 8ec8d9
 
 void RenderText_Draw_Border() {  // 8ec8ea
   RenderText_DrawBorderInitialize();
-  uint16 *d = RenderText_DrawBorderRow(vram_upload_data, 0);
+  le16 *d = RenderText_DrawBorderRow(vram_upload_data, 0);
   for(int i = 0; i != 6; i++)
     d = RenderText_DrawBorderRow(d, 6);
   d = RenderText_DrawBorderRow(d, 12);
@@ -2354,7 +2354,7 @@ void RenderText_Draw_Border() {  // 8ec8ea
 void RenderText_Draw_BorderIncremental() {  // 8ec919
   nmi_load_bg_from_vram = 1;
   uint8 a = text_incremental_state;
-  uint16 *d = vram_upload_data;
+  le16 *d = vram_upload_data;
   if (a)
     a = (a < 7) ? 1 : 2;
   switch (a) {
@@ -2498,7 +2498,7 @@ RESTART:;
 
 void RenderText_Draw_Finish() {  // 8eca35
   RenderText_DrawBorderInitialize();
-  uint16 *d = vram_upload_data;
+  le16 *d = vram_upload_data;
   d[0] = swap16(text_msgbox_topleft_copy);
   d[1] = 0x2E42;
   d[2] = 0x387F;
@@ -2529,7 +2529,7 @@ void VWF_RenderSingle(int c) {  // 8ecab8
   vwf_arr[i + 1] = arrval + width;
   uint16 r10 = (c & 0x70) * 2 + (c & 0xf);
   uint16 r0 = arrval * 2;
-  const uint16 *src2 = (uint16*)(kFontData + r10 * 16);
+  const le16 *src2 = (le16*)(kFontData + r10 * 16);
   uint8 *mbuf = (uint8 *)messaging_buf;
   for (int i = 0; i != 16; i += 2) {
     uint16 r4 = *src2++;
@@ -2554,7 +2554,7 @@ void VWF_RenderSingle(int c) {  // 8ecab8
       LE16(&(mbuf[x + 0])) = r4;
   }
   uint16 r8 = vwf_line_ptr + 0x150;
-  const uint16 *src3 = (uint16*)(kFontData + (r10 + 16) * 16);
+  const le16 *src3 = (le16*)(kFontData + (r10 + 16) * 16);
   for (int i = 0; i != 16; i += 2) {
     uint16 r4 = *src3++;
     int y = r8 + r0;
@@ -2647,8 +2647,8 @@ void RenderText_DrawSelectedYItem() {  // 8ece14
   const uint16 *p = Hud_GetItemBoxPtr(item);
   p += ((item == 3 || item == 32) ? 1 : (&link_item_bow)[item]) * 4;
   uint8 *vwf300 = &g_ram[0x1300];
-  memcpy(vwf300 + 0xc2, p, 4);
-  memcpy(vwf300 + 0xec, p + 2, 4);
+  CopyWordsToLe(vwf300 + 0xc2, p, 2);
+  CopyWordsToLe(vwf300 + 0xec, p + 2, 2);
 }
 
 void RenderText_Draw_Choose2HiOr3() {  // 8ece83
@@ -2716,7 +2716,7 @@ bool RenderText_Draw_Scroll() {  // 8ecfe2
   uint8 r2 = dialogue_scroll_speed;
   do {
     for (int i = 0; i < 0x7e0; i += 16) {
-      uint16 *p = (uint16 *)((uint8 *)messaging_buf + i);
+      le16 *p = (le16 *)((uint8 *)messaging_buf + i);
       p[0] = p[1];
       p[1] = p[2];
       p[2] = p[3];
@@ -2726,7 +2726,7 @@ bool RenderText_Draw_Scroll() {  // 8ecfe2
       p[6] = p[7];
       p[7] = p[168];
     }
-    uint16 *p = messaging_buf;
+    le16 *p = messaging_buf;
     for (int i = 0x34f; i <= 0x3ef; i += 8)
       p[i] = 0;
 
@@ -2749,7 +2749,7 @@ void RenderText_DrawBorderInitialize() {  // 8ed29c
   text_msgbox_topleft_copy = text_msgbox_topleft;
 }
 
-uint16 *RenderText_DrawBorderRow(uint16 *d, int y) {  // 8ed2ab
+le16 *RenderText_DrawBorderRow(le16 *d, int y) {  // 8ed2ab
   y >>= 1;
   *d++ = swap16(text_msgbox_topleft_copy);
   text_msgbox_topleft_copy += 0x20;
@@ -2763,7 +2763,7 @@ uint16 *RenderText_DrawBorderRow(uint16 *d, int y) {  // 8ed2ab
 }
 
 void Text_BuildCharacterTilemap() {  // 8ed2ec
-  uint16 *vwf300 = (uint16 *)&g_ram[0x1300];
+  le16 *vwf300 = (le16 *)&g_ram[0x1300];
   for (int i = 0; i < 126; i++)
     vwf300[i] = text_tilemap_cur++;
   RenderText_Refresh();
@@ -2772,8 +2772,8 @@ void Text_BuildCharacterTilemap() {  // 8ed2ec
 void RenderText_Refresh() {  // 8ed307
   RenderText_DrawBorderInitialize();
   text_msgbox_topleft_copy += 0x21;
-  uint16 *d = vram_upload_data;
-  uint16 *s = (uint16 *)&g_ram[0x1300];
+  le16 *d = vram_upload_data;
+  le16 *s = (le16 *)&g_ram[0x1300];
   for (int j = 0; j != 6; j++) {
     *d++ = swap16(text_msgbox_topleft_copy);
     text_msgbox_topleft_copy += 0x20;

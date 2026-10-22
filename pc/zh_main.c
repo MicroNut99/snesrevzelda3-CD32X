@@ -53,6 +53,7 @@ int main(int argc, char **argv) {
    * ZH_HASH=file: the SNES RAM's hash after every frame (to compare two builds) */
   if (getenv("ZH_REPLAY")) SaveLoadSlot(kSaveLoad_Replay, 256 + atoi(getenv("ZH_REPLAY")));
   FILE *hf = getenv("ZH_HASH") ? fopen(getenv("ZH_HASH"), "w") : 0;
+  FILE *pxf = getenv("ZH_PIXHASH") ? fopen(getenv("ZH_PIXHASH"), "w") : 0;
   int input = 0;
   for (int f = 0; f < frames; f++) {
     const char *p = script;               /* "frame:bits" pairs: the pad from that frame on */
@@ -64,9 +65,54 @@ int main(int argc, char **argv) {
       for (int i = 0; i < 0x20000; i++) h = (h ^ g_ram[i]) * 16777619u;
       fprintf(hf, "%d %08x\n", f, h);
     }
+    if (getenv("ZH_RAMAT") && atoi(getenv("ZH_RAMAT")) == f) {   /* the SNES RAM after frame f */
+      FILE *rf = fopen(getenv("ZH_RAMFILE") ? getenv("ZH_RAMFILE") : "ram.bin", "wb");
+      if (rf) { fwrite(g_ram, 1, 0x20000, rf); fclose(rf); }
+    }
+    if (getenv("ZH_PPUDBG") && atoi(getenv("ZH_PPUDBG")) == f) {
+      Ppu *q = g_zenv.ppu;
+      fprintf(stderr, "fb=%d bright=%d mode=%d scr=%02x/%02x win=%02x/%02x w1=%d-%d w2=%d-%d wsel=%08x\n", q->forcedBlank, q->brightness, q->mode,
+        q->screenEnabled[0], q->screenEnabled[1], q->screenWindowed[0], q->screenWindowed[1], q->window1left, q->window1right, q->window2left, q->window2right, q->windowsel);
+      for (int l = 0; l < 3; l++) fprintf(stderr, "bg%d h=%d v=%d map=%04x tiles=%04x\n", l, q->bgLayer[l].hScroll, q->bgLayer[l].vScroll, q->bgLayer[l].tilemapAdr, q->bgLayer[l].tileAdr);
+      uint32 vh = 2166136261u; for (int i = 0; i < 0x10000; i++) vh = (vh ^ ((uint8 *)q->vram)[i]) * 16777619u;
+      fprintf(stderr, "vramhash=%08x\n", vh);
+    }
     char key[16]; snprintf(key, sizeof key, ",%d,", f);
     char hay[4096]; snprintf(hay, sizeof hay, ",%s,", dumps);
-    if (strstr(hay, key)) {
+    static uint8 idx[256 * 240];
+    bool drawn = false;
+    if (getenv("ZH_DRAWALL")) {    /* draw every frame as the game (and the 32X) does: the draw
+                                    * changes g_ram (irq_flag, zelda_rtl.c), so hashes for the 32X
+                                    * test (expect.bin) must be made with this on */
+      if (getenv("ZH_SPLIT")) {    /* the 32X's two-CPU drawing, one part after the other:
+                                    * lines 0..n-1 in the game's context, n..224 in a copy */
+        static Ppu other;
+        ZeldaDrawCtx ctx, ctx2;
+        int n = atoi(getenv("ZH_SPLIT"));
+        ZeldaDrawPpuFrameBegin(&ctx, idx, 256, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);
+        ZeldaDrawCtxCopy(&ctx2, &other, &ctx);
+        ZeldaDrawPpuLines(&ctx2, n, ctx.height);
+        ZeldaDrawPpuLines(&ctx, 0, n - 1);
+        ZeldaDrawPpuFrameEnd(&ctx);
+      } else {
+        ZeldaDrawPpuFrame(idx, 256, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);
+      }
+      drawn = true;
+      if (pxf) {                    /* ZH_PIXHASH: the 8-bit picture + CGRAM, per frame */
+        uint32 h = 2166136261u;
+        for (int i = 0; i < 256 * 224; i++) h = (h ^ idx[i]) * 16777619u;
+        for (int i = 0; i < 256; i++) h = (h ^ (g_zenv.ppu->cgram[i] & 0xff)) * 16777619u, h = (h ^ (g_zenv.ppu->cgram[i] >> 8)) * 16777619u;
+        fprintf(pxf, "%d %08x\n", f, h);
+      }
+    }
+    if (strstr(hay, key) && getenv("ZH_INDEX8")) {    /* the 32X's path: 8-bit CGRAM indices */
+      if (!drawn) ZeldaDrawPpuFrame(idx, 256, kPpuRenderFlags_NewRenderer | kPpuRenderFlags_Index8);
+      char fn[512]; snprintf(fn, sizeof fn, "%s/i%05d.ppm", out, f);
+      FILE *o = fopen(fn, "wb"); fprintf(o, "P6\n256 224\n255\n");
+      for (int i = 0; i < 256 * 224; i++) { uint16 c = g_zenv.ppu->cgram[idx[i]];
+        uint8 rgb[3] = { (uint8)((c & 31) << 3), (uint8)((c >> 5 & 31) << 3), (uint8)((c >> 10 & 31) << 3) }; fwrite(rgb, 1, 3, o); }
+      fclose(o);
+    } else if (strstr(hay, key)) {
       memset(pix, 0, sizeof pix);
       ZeldaDrawPpuFrame((uint8 *)pix, 256 * 4, 0);
       char fn[512]; snprintf(fn, sizeof fn, "%s/z%05d.ppm", out, f);

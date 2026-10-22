@@ -118,6 +118,12 @@ struct Ppu {
   int32_t m7startY;
 
   uint16_t oam[0x110];
+  // Z32X: the frame's sprites that are not parked at Y 0xF0, in OAM order (PpuBeginDrawing):
+  // index, and the two high-table bits (size, X bit 8)
+  uint8_t objCount;
+  bool objBufferDirty;
+  uint8_t objList[128];
+  uint8_t objHigh[128];
   
   // store 31 extra entries to remove the need for clamp
   uint8_t brightnessMult[32 + 31];
@@ -127,7 +133,13 @@ struct Ppu {
   uint32_t colorMapRgb[256];
   PpuPixelPrioBufs bgBuffers[2];
   PpuPixelPrioBufs objBuffer;
-  uint16_t vram[0x8000];
+  // Z32X: the VRAM is shared by the frame's drawing contexts (a copy of this struct per SH2,
+  // ZeldaDrawPpuFrameBegin), so it is a separate block
+#ifdef __cplusplus
+  le16 *vram;                           // Z32X: little-endian, as all SNES memory (types.h)
+#else
+  uint16_t *vram;
+#endif
 };
 
 Ppu* ppu_init();

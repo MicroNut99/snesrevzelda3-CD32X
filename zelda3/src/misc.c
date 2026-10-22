@@ -179,7 +179,7 @@ static PlayerHandlerFunc *const kMainRouting[28] = {
   &Module1B_SpawnSelect,
 };
 
-const uint16 *SrcPtr(uint16 src) {
+const le16 *SrcPtr(uint16 src) {
   return &kPredefinedTileData[src >> 1];
 }
 
@@ -502,7 +502,7 @@ void Dungeon_LightTorch() {  // 81f3ec
 }
 
 void RoomDraw_AdjustTorchLightingChange(uint16 x, uint16 y, uint16 r8) {  // 81f746
-  const uint16 *ptr = SrcPtr(y);
+  const le16 *ptr = SrcPtr(y);
   x >>= 1;
   overworld_tileattr[x + 0] = ptr[0];
   overworld_tileattr[x + 64] = ptr[1];

@@ -53,13 +53,13 @@ static void CopyToVram(uint32 dstv, const uint8 *src, int len) {
 
 static void CopyToVramVertical(uint32 dstv, const uint8 *src, int len) {
   assert(!(len & 1));
-  uint16 *dst = &g_zenv.vram[dstv];
+  le16 *dst = &g_zenv.vram[dstv];
   for (int i = 0, i_end = len >> 1; i < i_end; i++, dst += 32, src += 2)
     *dst = LE16(&(*src));
 }
 
 static void CopyToVramLow(const uint8 *src, uint32 addr, int num) {
-  uint16 *dst = &g_zenv.vram[addr];
+  le16 *dst = &g_zenv.vram[addr];
   for (int i = 0; i < num; i++)
     dst[i] = (dst[i] & ~0xff) | src[i];
 }
@@ -209,13 +209,13 @@ void NMI_DoUpdates() {  // 8089e0
   }
 
   if (flag_update_cgram_in_nmi) {
-    memcpy(g_zenv.ppu->cgram, main_palette_buffer, 0x200);
+    CopyLeToWords(g_zenv.ppu->cgram, main_palette_buffer, 0x100);
   }
 
   flag_update_hud_in_nmi = 0;
   flag_update_cgram_in_nmi = 0;
 
-  memcpy(g_zenv.ppu->oam, &g_ram[0x800], 0x220);
+  CopyLeToWords(g_zenv.ppu->oam, &g_ram[0x800], 0x110);
 
   if (nmi_load_bg_from_vram) {
     const uint8 *p;
@@ -255,7 +255,7 @@ void NMI_DoUpdates() {  // 8089e0
       } else if (vmain == 0x81) {
         // copy with other increment
         assert((len & 1) == 0);
-        uint16 *dp = &g_zenv.vram[dst];
+        le16 *dp = &g_zenv.vram[dst];
         for (int i = 0; i < len; i += 2, dp += 32)
           *dp = LE16(&(p[i]));
       } else {
@@ -275,7 +275,7 @@ void NMI_DoUpdates() {  // 8089e0
 void NMI_UploadTilemap() {  // 808cb0
   memcpy(&g_zenv.vram[kNmiVramAddrs[(*(uint8*)(g_ram+0x116))] << 8], &g_ram[0x1000], 0x800);
 
-  *(uint16 *)&g_ram[0x1000] = 0;
+  *(le16 *)&g_ram[0x1000] = 0;
   nmi_disable_core_updates = 0;
 }
 
@@ -294,7 +294,7 @@ void NMI_UpdateOWScroll() {  // 808d13
   int len = f & 0x3fff;
   src += 2;
   do {
-    uint16 *dst = &g_zenv.vram[LE16(&(src[0]))];
+    le16 *dst = &g_zenv.vram[LE16(&(src[0]))];
     src += 2;
     for (int i = 0, i_end = len >> 1; i < i_end; i++, dst += step, src += 2)
       *dst = LE16(&(*src));
@@ -307,7 +307,7 @@ void NMI_UpdateSubscreenOverlay() {  // 808d62
 }
 
 void NMI_HandleArbitraryTileMap(const uint8 *src, int i, int i_end) {  // 808dae
-  uint16 *r10 = &word_7F4000;
+  le16 *r10 = &word_7F4000;
   do {
     memcpy(&g_zenv.vram[r10[i >> 1]], src, 0x80);
     src += 0x80;
@@ -422,7 +422,7 @@ void HandleStripes14(const uint8 *p) {  // 8092a1
     p += 4;
 
     if (vram_incr_amount == 0) {
-      uint16 *dst = &g_zenv.vram[vmem_addr];
+      le16 *dst = &g_zenv.vram[vmem_addr];
       if (is_memset) {
         uint16 v = p[0] | p[1] << 8;
         len = (len + 1) >> 1;
@@ -435,7 +435,7 @@ void HandleStripes14(const uint8 *p) {  // 8092a1
       }
     } else {
       // increment vram by 32 instead of 1
-      uint16 *dst = &g_zenv.vram[vmem_addr];
+      le16 *dst = &g_zenv.vram[vmem_addr];
       if (is_memset) {
         uint16 v = p[0] | p[1] << 8;
         len = (len + 1) >> 1;

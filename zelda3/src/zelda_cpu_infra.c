@@ -272,8 +272,8 @@ static void RunEmulatedSnesFrame(Snes *snes, int run_what) {
     RunOrigAsmCodeOneLoop(snes);
     g_emulated_ram[0x12] = 1;
     // Fixup uninitialized variable
-    *(uint16*)(g_emulated_ram+0xAE0) = 0xb280;
-    *(uint16*)(g_emulated_ram+0xAE2) = 0xb280 + 0x60;
+    *(le16*)(g_emulated_ram+0xAE0) = 0xb280;
+    *(le16*)(g_emulated_ram+0xAE2) = 0xb280 + 0x60;
   }
 
   // Run poly code

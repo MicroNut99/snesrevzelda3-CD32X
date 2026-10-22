@@ -29,11 +29,19 @@ static inline int FindInWordArray(const uint16 *data, uint16 lookfor, size_t siz
       return (int)i;
   return -1;
 }
+#ifdef __cplusplus
+static inline int FindInWordArray(const le16 *data, uint16 lookfor, size_t size) {   // Z32X: an array in SNES RAM
+  for (size_t i = size; i--;)
+    if (data[i] == lookfor)
+      return (int)i;
+  return -1;
+}
+#endif
 
 
 extern const uint16 kMemoryLocationToGiveItemTo[76];
 
-const uint16 *SrcPtr(uint16 src);
+const le16 *SrcPtr(uint16 src);
 uint8 Ancilla_Sfx2_Near(uint8 a);
 void Ancilla_Sfx3_Near(uint8 a);
 void LoadDungeonRoomRebuildHUD();

@@ -18,3 +18,14 @@ pc/zh
 *.32x
 *.32X
 mars/obj/
+pc/zhx
+pc/obj/
+sh2/obj/
+# sh2/z32.bin holds the game's data (incbin of zelda3_assets.dat): never commit it
+sh2/z32.bin
+sh2/z32.map
+cart/cart_md.bin
+# made from the reference recordings / your ROM for the tests
+replay.bin
+expect.bin
+expect_px.bin

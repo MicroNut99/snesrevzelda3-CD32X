@@ -409,7 +409,7 @@ void EraseTileMaps_normal() {
   EraseTileMaps(0x7f, 0x1ec);
 }
 
-static void DecompAndUpload2bpp(uint16 *vram_ptr, uint8 pack) {
+static void DecompAndUpload2bpp(le16 *vram_ptr, uint8 pack) {
   Decomp_spr(&g_ram[0x14000], pack);
   const uint8 *src = &g_ram[0x14000];
   memcpy(vram_ptr, src, 1024 * sizeof(uint16));
@@ -435,7 +435,7 @@ void EraseTileMaps_dungeonmap() {  // 80833f
 }
 
 void EraseTileMaps(uint16 r2, uint16 r0) {  // 808355
-  uint16 *dst = g_zenv.vram;
+  le16 *dst = g_zenv.vram;
   for (int i = 0; i < 0x2000; i++)
     dst[i] = r0;
 
@@ -846,8 +846,8 @@ void InitializeTilesets() {  // 80e19b
 void LoadDefaultGraphics() {  // 80e2d0
   const uint8 *src = GetCompSpritePtr(0);
 
-  uint16 *vram_ptr = &g_zenv.vram[0x4000];
-  uint16 *tmp = (uint16 *)&g_ram[0xbf];
+  le16 *vram_ptr = &g_zenv.vram[0x4000];
+  le16 *tmp = (le16 *)&g_ram[0xbf];
   int num = 64;
   do {
     for (int i = 7; i >= 0; i--, src += 2) {
@@ -935,11 +935,11 @@ void TransferFontToVRAM() {  // 80e556
   memcpy(&g_zenv.vram[0x7000], FindIndexInMemblk(kDialogueFont(0), 0).ptr, 0x800 * sizeof(uint16));
 }
 
-void Do3To4High(uint16 *vram_ptr, const uint8 *decomp_addr) {  // 80e5af
+void Do3To4High(le16 *vram_ptr, const uint8 *decomp_addr) {  // 80e5af
   for (int j = 0; j < 64; j++) {
-    uint16 *t = (uint16 *)&dung_line_ptrs_row0;
+    le16 *t = (le16 *)&dung_line_ptrs_row0;
     for (int i = 7; i >= 0; i--, decomp_addr += 2) {
-      uint16 d = *(uint16 *)decomp_addr;
+      uint16 d = *(le16 *)decomp_addr;
       t[i] = (d | (d >> 8)) & 0xff;
       *vram_ptr++ = d;
     }
@@ -950,16 +950,16 @@ void Do3To4High(uint16 *vram_ptr, const uint8 *decomp_addr) {  // 80e5af
   }
 }
 
-void Do3To4Low(uint16 *vram_ptr, const uint8 *decomp_addr) {  // 80e63c
+void Do3To4Low(le16 *vram_ptr, const uint8 *decomp_addr) {  // 80e63c
   for (int j = 0; j < 64; j++) {
     for (int i = 0; i < 8; i++, decomp_addr += 2)
-      *vram_ptr++ = *(uint16 *)decomp_addr;
+      *vram_ptr++ = *(le16 *)decomp_addr;
     for (int i = 0; i < 8; i++, decomp_addr += 1)
       *vram_ptr++ = *decomp_addr;
   }
 }
 
-void LoadSpriteGraphics(uint16 *vram_ptr, int gfx_pack, uint8 *decomp_addr) {  // 80e583
+void LoadSpriteGraphics(le16 *vram_ptr, int gfx_pack, uint8 *decomp_addr) {  // 80e583
   Decomp_spr(decomp_addr, gfx_pack);
   if (gfx_pack == 0x52 || gfx_pack == 0x53 || gfx_pack == 0x5a || gfx_pack == 0x5b ||
       gfx_pack == 0x5c || gfx_pack == 0x5e || gfx_pack == 0x5f)
@@ -968,7 +968,7 @@ void LoadSpriteGraphics(uint16 *vram_ptr, int gfx_pack, uint8 *decomp_addr) {  /
     Do3To4Low(vram_ptr, decomp_addr);
 }
 
-void LoadBackgroundGraphics(uint16 *vram_ptr, int gfx_pack, int slot, uint8 *decomp_addr) {  // 80e609
+void LoadBackgroundGraphics(le16 *vram_ptr, int gfx_pack, int slot, uint8 *decomp_addr) {  // 80e609
   Decomp_bg(decomp_addr, gfx_pack);
   if ((main_tile_theme_index >= 0x20) ? (slot == 7 || slot == 2 || slot == 3 || slot == 4) : (slot >= 4))
     Do3To4High(vram_ptr, decomp_addr);
@@ -1603,7 +1603,7 @@ void Dungeon_RestoreStarTileChr() {  // 80fda7
   int xx = 0, yy = 32;
   if (byte_7E04BC)
     xx = 32, yy = 0;
-  uint16 *p = messaging_buf;
+  le16 *p = messaging_buf;
   memcpy(p, g_ram + 0xbdc0 + xx, 32);
   memcpy(p + 16, g_ram + 0xbdc0 + yy, 32);
   nmi_subroutine_index = 0x18;
@@ -1647,7 +1647,7 @@ void Module07_16_UpdatePegs_Step2() {  // 82974d
 }
 
 void Dungeon_UpdatePegGFXBuffer(int x, int y) {  // 829773
-  uint16 *src = (uint16 *)&g_ram[0xb340];
+  le16 *src = (le16 *)&g_ram[0xb340];
   for (int i = 0; i < 64; i++)
     messaging_buf[i] = src[(x >> 1) + i];
   for (int i = 0; i < 64; i++)
@@ -1899,7 +1899,7 @@ void LoadGearPalettes_bunny() {  // 8ed6dd
 }
 
 void LoadGearPalettes(uint8 sword, uint8 shield, uint8 armor) {  // 8ed6e8
-  const uint16 *src = kPalette_Sword + (sword && sword != 255 ? sword - 1 : 0) * 3;
+  const le16 *src = kPalette_Sword + (sword && sword != 255 ? sword - 1 : 0) * 3;
   Palette_LoadMultiple_Arbitrary(src, 0x1b2, 2);
 
   src = kPalette_Shield + (shield ? shield - 1 : 0) * 4;
@@ -1910,7 +1910,7 @@ void LoadGearPalettes(uint8 sword, uint8 shield, uint8 armor) {  // 8ed6e8
   flag_update_cgram_in_nmi++;
 }
 
-void LoadGearPalette(int dst, const uint16 *src, int n) {  // 8ed741
+void LoadGearPalette(int dst, const le16 *src, int n) {  // 8ed741
   memcpy(&aux_palette_buffer[dst >> 1], src, sizeof(uint16) * n);
   memcpy(&main_palette_buffer[dst >> 1], src, sizeof(uint16) * n);
 }
@@ -1997,33 +1997,33 @@ enum {
 };
 
 void Palette_Load_Sp0L() {  // 9bec77
-  const uint16 *src = kPalette_SpriteAux3 + palette_sp0l * 7;
+  const le16 *src = kPalette_SpriteAux3 + palette_sp0l * 7;
   Palette_LoadSingle(src, palette_swap_flag ? kPal_sp7l : kPal_sp0l, 6);
 }
 
 void Palette_Load_SpriteMain() {  // 9bec9e
-  const uint16 *src = kPalette_MainSpr + (overworld_screen_index & 0x40 ? 60 : 0);
+  const le16 *src = kPalette_MainSpr + (overworld_screen_index & 0x40 ? 60 : 0);
   Palette_LoadMultiple(src, kPal_sp1to4, 14, 3);
 }
 
 void Palette_Load_Sp5L() {  // 9becc5
-  const uint16 *src = kPalette_SpriteAux1 + (palette_sp5l) * 7;
+  const le16 *src = kPalette_SpriteAux1 + (palette_sp5l) * 7;
   Palette_LoadSingle(src, kPal_sp5l, 6);
 }
 
 void Palette_Load_Sp6L() {  // 9bece4
-  const uint16 *src = kPalette_SpriteAux1 + (palette_sp6l) * 7;
+  const le16 *src = kPalette_SpriteAux1 + (palette_sp6l) * 7;
   Palette_LoadSingle(src, kPal_sp6l, 6);
 }
 
 void Palette_Load_Sword() {  // 9bed03
-  const uint16 *src = kPalette_Sword + ((int8)link_sword_type > 0 ? link_sword_type - 1 : 0) * 3;  // wtf: zelda reads offset 0xff
+  const le16 *src = kPalette_Sword + ((int8)link_sword_type > 0 ? link_sword_type - 1 : 0) * 3;  // wtf: zelda reads offset 0xff
   Palette_LoadMultiple_Arbitrary(src, kPal_Sword, 2);
   flag_update_cgram_in_nmi += 1;
 }
 
 void Palette_Load_Shield() {  // 9bed29
-  const uint16 *src = kPalette_Shield + (link_shield_type ? link_shield_type - 1 : 0) * 4;
+  const le16 *src = kPalette_Shield + (link_shield_type ? link_shield_type - 1 : 0) * 4;
   Palette_LoadMultiple_Arbitrary(src, kPal_Shield, 3);
   flag_update_cgram_in_nmi += 1;
 }
@@ -2039,13 +2039,13 @@ void Palette_Load_SpriteEnvironment() {  // 9bed6e
 #define kPalette_MiscSprite kPalette_MiscSprite_Indoors
 
 void Palette_Load_SpriteEnvironment_Dungeon() {  // 9bed72
-  const uint16 *src = kPalette_MiscSprite + palette_sp6r_indoors * 7;
+  const le16 *src = kPalette_MiscSprite + palette_sp6r_indoors * 7;
   Palette_LoadSingle(src, kPal_sp6r, 6);
 }
 
 void Palette_MiscSprite_Outdoors() {  // 9bed91
   int t = (overworld_screen_index & 0x40) ? 9 : 7;
-  const uint16 *src = kPalette_MiscSprite + t * 7;
+  const le16 *src = kPalette_MiscSprite + t * 7;
   Palette_LoadSingle(src, palette_swap_flag ? kPal_sp7r : kPal_sp0r, 6);
   Palette_LoadSingle(src - 7, kPal_sp6r, 6);
 }
@@ -2055,7 +2055,7 @@ void Palette_Load_DungeonMapSprite() {  // 9beddd
 }
 
 void Palette_Load_LinkArmorAndGloves() {  // 9bedf9
-  const uint16 *src = kPalette_ArmorAndGloves + link_armor * 15;
+  const le16 *src = kPalette_ArmorAndGloves + link_armor * 15;
   Palette_LoadMultiple_Arbitrary(src, kPal_ArmorGloves, 14);
   Palette_UpdateGlovesColor();
 }
@@ -2071,41 +2071,41 @@ void Palette_Load_DungeonMapBG() {  // 9bee3a
 }
 
 void Palette_Load_HUD() {  // 9bee52
-  const uint16 *src = kHudPalData + hud_palette * 32;
+  const le16 *src = kHudPalData + hud_palette * 32;
   Palette_LoadMultiple(src, 0x0, 15, 1);
 }
 
 void Palette_Load_DungeonSet() {  // 9bee74
-  const uint16 *src = kPalette_DungBgMain + (palette_main_indoors >> 1) * 90;
+  const le16 *src = kPalette_DungBgMain + (palette_main_indoors >> 1) * 90;
   Palette_LoadMultiple(src, 0x42, 14, 5);
   Palette_LoadSingle(src, palette_swap_flag ? kPal_sp7r : kPal_sp0r, 6);
 }
 
 void Palette_Load_OWBG3() {  // 9beea8
-  const uint16 *src = kPalette_OverworldBgAux3 + overworld_palette_aux3_bp7_lo * 7;
+  const le16 *src = kPalette_OverworldBgAux3 + overworld_palette_aux3_bp7_lo * 7;
   Palette_LoadSingle(src, 0xE2, 6);
 }
 
 void Palette_Load_OWBGMain() {  // 9beec7
-  const uint16 *src = kPalette_OverworldBgMain + overworld_palette_mode * 35;
+  const le16 *src = kPalette_OverworldBgMain + overworld_palette_mode * 35;
   Palette_LoadMultiple(src, 0x42, 6, 4);
 }
 
 void Palette_Load_OWBG1() {  // 9beee8
-  const uint16 *src = kPalette_OverworldBgAux12 + overworld_palette_aux1_bp2to4_hi * 21;
+  const le16 *src = kPalette_OverworldBgAux12 + overworld_palette_aux1_bp2to4_hi * 21;
   Palette_LoadMultiple(src, 0x52, 6, 2);
 }
 
 void Palette_Load_OWBG2() {  // 9bef0c
-  const uint16 *src = kPalette_OverworldBgAux12 + overworld_palette_aux2_bp5to7_hi * 21;
+  const le16 *src = kPalette_OverworldBgAux12 + overworld_palette_aux2_bp5to7_hi * 21;
   Palette_LoadMultiple(src, 0xB2, 6, 2);
 }
 
-void Palette_LoadSingle(const uint16 *src, int dst, int x_ents) {  // 9bef30
+void Palette_LoadSingle(const le16 *src, int dst, int x_ents) {  // 9bef30
   memcpy(&aux_palette_buffer[(dst + overworld_palette_aux_or_main) >> 1], src, sizeof(uint16) * (x_ents + 1));
 }
 
-void Palette_LoadMultiple(const uint16 *src, int dst, int x_ents, int y_pals) {  // 9bef4b
+void Palette_LoadMultiple(const le16 *src, int dst, int x_ents, int y_pals) {  // 9bef4b
   x_ents++;
   do {
     memcpy(&aux_palette_buffer[(dst + overworld_palette_aux_or_main) >> 1], src, sizeof(uint16) * x_ents);
@@ -2114,7 +2114,7 @@ void Palette_LoadMultiple(const uint16 *src, int dst, int x_ents, int y_pals) { 
   } while (--y_pals >= 0);
 }
 
-void Palette_LoadMultiple_Arbitrary(const uint16 *src, int dst, int x_ents) {  // 9bef7b
+void Palette_LoadMultiple_Arbitrary(const le16 *src, int dst, int x_ents) {  // 9bef7b
   memcpy(&aux_palette_buffer[dst >> 1], src, sizeof(uint16) * (x_ents + 1));
   memcpy(&main_palette_buffer[dst >> 1], src, sizeof(uint16) * (x_ents + 1));
 }
@@ -2134,7 +2134,7 @@ void Palette_LoadForFileSelect() {  // 9bef96
 }
 
 void Palette_LoadForFileSelect_Armor(int k, uint8 armor, uint8 gloves) {  // 9bf032
-  const uint16 *pal = kPalette_ArmorAndGloves + armor * 15;
+  const le16 *pal = kPalette_ArmorAndGloves + armor * 15;
   for (int i = 0; i != 15; i++)
     aux_palette_buffer[k + 0x81 + i] = main_palette_buffer[k + 0x81 + i] = pal[i];
   if (gloves)
@@ -2142,19 +2142,19 @@ void Palette_LoadForFileSelect_Armor(int k, uint8 armor, uint8 gloves) {  // 9bf
 }
 
 void Palette_LoadForFileSelect_Sword(int k, uint8 sword) {  // 9bf072
-  const uint16 *src = kPalette_Sword + (sword ? sword - 1 : 0) * 3;
+  const le16 *src = kPalette_Sword + (sword ? sword - 1 : 0) * 3;
   for (int i = 0; i != 3; i++)
     aux_palette_buffer[k + 0x99 + i] = main_palette_buffer[k + 0x99 + i] = src[i];
 }
 
 void Palette_LoadForFileSelect_Shield(int k, uint8 shield) {  // 9bf09a
-  const uint16 *src = kPalette_Shield + (shield ? shield - 1 : 0) * 4;
+  const le16 *src = kPalette_Shield + (shield ? shield - 1 : 0) * 4;
   for (int i = 0; i != 4; i++)
     aux_palette_buffer[k + 0x9c + i] = main_palette_buffer[k + 0x9c + i] = src[i];
 }
 
 void Palette_LoadAgahnim() {  // 9bf0c2
-  const uint16 *src = kPalette_SpriteAux1 + 14 * 7;
+  const le16 *src = kPalette_SpriteAux1 + 14 * 7;
   Palette_LoadMultiple_Arbitrary(src, 0x162, 6);
   Palette_LoadMultiple_Arbitrary(src, 0x182, 6);
   Palette_LoadMultiple_Arbitrary(src, 0x1a2, 6);

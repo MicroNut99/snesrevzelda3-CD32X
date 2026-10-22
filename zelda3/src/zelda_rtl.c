@@ -18,16 +18,9 @@ uint32 g_wanted_zelda_features;
 
 static void Startup_InitializeMemory();
 
-typedef struct SimpleHdma {
-  const uint8 *table;
-  const uint8 *indir_ptr;
-  uint8 rep_count;
-  uint8 mode;
-  uint8 ppu_addr;
-  uint8 indir_bank;
-} SimpleHdma;
+typedef ZeldaDrawHdma SimpleHdma;   // Z32X: kept in ZeldaDrawCtx (zelda_rtl.h)
 static void SimpleHdma_Init(SimpleHdma *c, DmaChannel *dc);
-static void SimpleHdma_DoLine(SimpleHdma *c);
+static void SimpleHdma_DoLine(SimpleHdma *c, Ppu *ppu);
 
 static const uint8 bAdrOffsets[8][4] = {
   {0, 0, 0, 0},
@@ -70,6 +63,14 @@ void zelda_ppu_write_word(uint32_t adr, uint16_t val) {
   zelda_ppu_write(adr + 1, val >> 8);
 }
 
+/* Z32X: the mode-7 zoom tables are native uint16 tables of the code; the HDMA reads bytes as the
+ * SNES would, so it gets a little-endian copy (made once) */
+static const uint8 *LeImageOf(const uint16 *t, size_t n, uint8 *buf, bool *done) {
+  if (!*done) { for (size_t i = 0; i < n * 2; i++) buf[i] = NativeLeByte(t, i); *done = true; }
+  return buf;
+}
+static uint8 g_zooms_le[2][480];
+static bool g_zooms_le_done[2];
 static const uint8 *SimpleHdma_GetPtr(uint32 p) {
   switch (p) {
 
@@ -85,10 +86,10 @@ static const uint8 *SimpleHdma_GetPtr(uint32 p) {
   case 0x1b00: return (uint8 *)hdma_table_dynamic;
   case 0x1be0: return (uint8 *)hdma_table_dynamic + 0xe0;
   case 0x1bf0: return (uint8 *)hdma_table_dynamic + 0xf0;
-  case 0xadd27: return (uint8*)kMapMode_Zooms1;
-  case 0xade07: return (uint8*)kMapMode_Zooms1 + 0xe0;
-  case 0xadee7: return (uint8*)kMapMode_Zooms2;
-  case 0xadfc7: return (uint8*)kMapMode_Zooms2 + 0xe0;
+  case 0xadd27: return LeImageOf(kMapMode_Zooms1, 240, g_zooms_le[0], &g_zooms_le_done[0]);
+  case 0xade07: return LeImageOf(kMapMode_Zooms1, 240, g_zooms_le[0], &g_zooms_le_done[0]) + 0xe0;
+  case 0xadee7: return LeImageOf(kMapMode_Zooms2, 240, g_zooms_le[1], &g_zooms_le_done[1]);
+  case 0xadfc7: return LeImageOf(kMapMode_Zooms2, 240, g_zooms_le[1], &g_zooms_le_done[1]) + 0xe0;
   case 0x600: return &g_ram[0x600];
   case 0x602: return &g_ram[0x602];
   case 0x604: return &g_ram[0x604];
@@ -112,7 +113,7 @@ static void SimpleHdma_Init(SimpleHdma *c, DmaChannel *dc) {
   c->indir_bank = dc->indBank;
 }
 
-static void SimpleHdma_DoLine(SimpleHdma *c) {
+static void SimpleHdma_DoLine(SimpleHdma *c, Ppu *ppu) {
   if (c->table == NULL)
     return;
   bool do_transfer = false;
@@ -131,7 +132,7 @@ static void SimpleHdma_DoLine(SimpleHdma *c) {
   if(do_transfer || c->rep_count & 0x80) {
     for(int j = 0, j_end = transferLength[c->mode & 7]; j < j_end; j++) {
       uint8 v = c->mode & 0x40 ? *c->indir_ptr++ : *c->table++;
-      zelda_ppu_write(0x2100 + c->ppu_addr + bAdrOffsets[c->mode & 7][j], v);
+      ppu_write(ppu, (uint8)(c->ppu_addr + bAdrOffsets[c->mode & 7][j]), v);   // Z32X: this context's PPU
     }
   }
   c->rep_count--;
@@ -172,23 +173,30 @@ static void ConfigurePpuSideSpace() {
   PpuSetExtraSideSpace(g_zenv.ppu, extra_left, extra_right, extra_bottom);
 }
 
-void ZeldaDrawPpuFrame(uint8 *pixel_buffer, size_t pitch, uint32 render_flags) {
-  SimpleHdma hdma_chans[2];
-
+/* Z32X: the frame's drawing is split so the two SH2s can each draw part of the lines.
+ * ZeldaDrawPpuFrameBegin readies g_zenv.ppu (the master's context) and the HDMA; a copy of the
+ * whole context (ZeldaDrawCtx, sharing the VRAM) lets another CPU draw lines on its own:
+ * ZeldaDrawPpuLines replays the line events (HDMA, the line-128 IRQ) from line 0 and draws the
+ * lines from..to. ZeldaDrawPpuFrameEnd makes the draw's one change to the game RAM. */
+void ZeldaDrawPpuFrameBegin(ZeldaDrawCtx *ctx, uint8 *pixel_buffer, size_t pitch, uint32 render_flags) {
+  ctx->ppu = g_zenv.ppu;
   PpuBeginDrawing(g_zenv.ppu, pixel_buffer, pitch, render_flags);
+
+  // the mode-7 zoom tables' little-endian copies are made here, before any other CPU reads them
+  SimpleHdma_GetPtr(0xadd27), SimpleHdma_GetPtr(0xadee7);
 
   dma_startDma(g_zenv.dma, HDMAEN_copy, true);
 
-  SimpleHdma_Init(&hdma_chans[0], &g_zenv.dma->channel[6]);
-  SimpleHdma_Init(&hdma_chans[1], &g_zenv.dma->channel[7]);
+  SimpleHdma_Init(&ctx->hdma[0], &g_zenv.dma->channel[6]);
+  SimpleHdma_Init(&ctx->hdma[1], &g_zenv.dma->channel[7]);
 
   // Cheat: Let the PPU impl know about the hdma perspective correction so it can avoid guessing.
   if ((render_flags & kPpuRenderFlags_4x4Mode7) && g_zenv.ppu->mode == 7) {
-    if (hdma_chans[0].table == kMapModeHdma0)
+    if (ctx->hdma[0].table == kMapModeHdma0)
       PpuSetMode7PerspectiveCorrection(g_zenv.ppu, kMapMode_Zooms1[0], kMapMode_Zooms1[223]);
-    else if (hdma_chans[0].table == kMapModeHdma1)
+    else if (ctx->hdma[0].table == kMapModeHdma1)
       PpuSetMode7PerspectiveCorrection(g_zenv.ppu, kMapMode_Zooms2[0], kMapMode_Zooms2[223]);
-    else if (hdma_chans[0].table == kAttractIndirectHdmaTab)
+    else if (ctx->hdma[0].table == kAttractIndirectHdmaTab)
       PpuSetMode7PerspectiveCorrection(g_zenv.ppu, hdma_table_dynamic[0], hdma_table_dynamic[223]);
     else
       PpuSetMode7PerspectiveCorrection(g_zenv.ppu, 0, 0);
@@ -197,23 +205,47 @@ void ZeldaDrawPpuFrame(uint8 *pixel_buffer, size_t pitch, uint32 render_flags) {
   if (g_zenv.ppu->extraLeftRight != 0 || render_flags & kPpuRenderFlags_Height240)
     ConfigurePpuSideSpace();
 
-  int height = render_flags & kPpuRenderFlags_Height240 ? 240 : 224;
+  ctx->height = render_flags & kPpuRenderFlags_Height240 ? 240 : 224;
+  ctx->irq_flag_copy = irq_flag;         // as the game left it: read at line 128
+  ctx->bg3_hofs = selectfile_var8;
+}
 
-  for (int i = 0; i <= height; i++) {
-    if (i == 128 && irq_flag) {
-      zelda_ppu_write(BG3HOFS, selectfile_var8);
-      zelda_ppu_write(BG3HOFS, selectfile_var8 >> 8);
-      zelda_ppu_write(BG3VOFS, 0);
-      zelda_ppu_write(BG3VOFS, 0);
-      if (irq_flag & 0x80) {
-        irq_flag = 0;
-        zelda_snes_dummy_write(NMITIMEN, 0x81);
-      }
+// Copy ctx (and its PPU state) into dst / dst_ppu, a context another CPU can draw with
+void ZeldaDrawCtxCopy(ZeldaDrawCtx *dst, Ppu *dst_ppu, const ZeldaDrawCtx *ctx) {
+  *dst = *ctx;
+  memcpy(dst_ppu, ctx->ppu, sizeof(Ppu));   // the VRAM pointer is shared
+  dst->ppu = dst_ppu;
+}
+
+// Lines 0..last (the frame's 0..height): the events of every line, the drawing of from..last
+void ZeldaDrawPpuLines(ZeldaDrawCtx *ctx, int from, int last) {
+  Ppu *ppu = ctx->ppu;
+  for (int i = 0; i <= last; i++) {
+    if (i == 128 && ctx->irq_flag_copy) {
+      ppu_write(ppu, (uint8)BG3HOFS, (uint8)ctx->bg3_hofs);
+      ppu_write(ppu, (uint8)BG3HOFS, (uint8)(ctx->bg3_hofs >> 8));
+      ppu_write(ppu, (uint8)BG3VOFS, 0);
+      ppu_write(ppu, (uint8)BG3VOFS, 0);
     }
-    ppu_runLine(g_zenv.ppu, i);
-    SimpleHdma_DoLine(&hdma_chans[0]);
-    SimpleHdma_DoLine(&hdma_chans[1]);
+    if (i >= from)
+      ppu_runLine(ppu, i);
+    SimpleHdma_DoLine(&ctx->hdma[0], ppu);
+    SimpleHdma_DoLine(&ctx->hdma[1], ppu);
   }
+}
+
+void ZeldaDrawPpuFrameEnd(ZeldaDrawCtx *ctx) {
+  if (ctx->irq_flag_copy & 0x80) {           // the line-128 IRQ's change to the game RAM
+    irq_flag = 0;
+    zelda_snes_dummy_write(NMITIMEN, 0x81);
+  }
+}
+
+void ZeldaDrawPpuFrame(uint8 *pixel_buffer, size_t pitch, uint32 render_flags) {
+  ZeldaDrawCtx ctx;
+  ZeldaDrawPpuFrameBegin(&ctx, pixel_buffer, pitch, render_flags);
+  ZeldaDrawPpuLines(&ctx, 0, ctx.height);
+  ZeldaDrawPpuFrameEnd(&ctx);
 }
 
 void HdmaSetup(uint32 addr6, uint32 addr7, uint8 transfer_unit, uint8 reg6, uint8 reg7, uint8 indirect_bank) {
@@ -528,6 +560,29 @@ void StateRecorder_Load(StateRecorder *sr, FILE *f, bool replay_mode) {
     ByteArray_Destroy(&arr);
     assert(state.p == state.pend);
   }
+}
+
+/* Z32X: StateRecorder_Load's replay branch for a recording in memory (the 32X has no files):
+ * the 32-byte header (little-endian words), then the input log. Only recordings that start
+ * from power-on (no base snapshot) - chapter 1. */
+bool ZeldaStartReplayFromMemory(const uint8 *sav, size_t len) {
+  StateRecorder *sr = &state_recorder;
+  uint32 hdr[8];
+  for (int i = 0; i < 8; i++) hdr[i] = LE32(sav + 4 * i);
+  if (hdr[0] != 1 || (hdr[5] & 1) || 32 + hdr[2] > len)
+    return false;
+  sr->total_frames = hdr[1];
+  ByteArray_Resize(&sr->log, hdr[2]);
+  memcpy(sr->log.data, sav + 32, hdr[2]);
+  ByteArray_Resize(&sr->base_snapshot, 0);
+  sr->replay_next_cmd_at = 0;
+  sr->replay_mode = true;
+  sr->frames_since_last = 0;
+  sr->last_inputs = 0;
+  sr->replay_pos = sr->replay_pos_last_complete = 0;
+  sr->replay_frame_counter = 0;
+  ZeldaReset(false);
+  return true;
 }
 
 void StateRecorder_Save(StateRecorder *sr, FILE *f) {

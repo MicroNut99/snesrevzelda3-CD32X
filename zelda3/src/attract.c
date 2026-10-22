@@ -994,7 +994,7 @@ void Attract_BuildBackgrounds() {  // 8cf7e6
   {
     int k = 0;
     const uint16 *p = kAttract_CopyToVram_Tab0;
-    uint16 *dst = (uint16 *)&g_ram[0x1006];
+    le16 *dst = (le16 *)&g_ram[0x1006];
     do {
       int j = k & 3;
       do {
@@ -1006,7 +1006,7 @@ void Attract_BuildBackgrounds() {  // 8cf7e6
 
   {
     int k = 0;
-    uint16 *dst = (uint16 *)&g_ram[0x1006];
+    le16 *dst = (le16 *)&g_ram[0x1006];
     do {
       int j = k & 1;
       const uint16 *p = kAttract_CopyToVram_Tab1 + ((k & 0x20) >> 4);
@@ -1020,7 +1020,7 @@ void Attract_BuildBackgrounds() {  // 8cf7e6
 }
 
 void Attract_TriggerBGDMA(uint16 dstv) {  // 8cf879
-  uint16 *dst = &g_zenv.vram[dstv];
+  le16 *dst = &g_zenv.vram[dstv];
   for (int i = 0; i < 8; i++) {
     memcpy(dst, &g_ram[0x1006], 0x100);
     dst += 0x80;

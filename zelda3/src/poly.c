@@ -243,7 +243,7 @@ void Polyhedral_FillLine() {  // 89fdcf
   uint16 right = kPoly_RightSideMask[(poly_x1_frac >> 8) & 7];
   poly_tmp2 = (poly_x0_frac >> 8) & 0x38;
   int d0 = ((poly_x1_frac >> 8) & 0x38);
-  uint16 *ptr = (uint16*)&g_ram[poly_raster_dst_ptr + d0 * 4];
+  le16 *ptr = (le16*)&g_ram[poly_raster_dst_ptr + d0 * 4];
   if ((d0 -= poly_tmp2) == 0) {
     poly_tmp1 = left & right;
     ptr[0] ^= (ptr[0] ^ poly_raster_color0) & poly_tmp1;
