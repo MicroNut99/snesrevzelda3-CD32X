@@ -933,6 +933,7 @@ void PatchCommand(char c) {
 }
 
 
+#ifndef Z32X  // the 32X keeps the save file in the cartridge's SRAM (sh2/z32_save.cpp)
 void ZeldaReadSram() {
   FILE *f = fopen("saves/sram.dat", "rb");
   if (f) {
@@ -953,3 +954,4 @@ void ZeldaWriteSram() {
     fprintf(stderr, "Unable to write saves/sram.dat\n");
   }
 }
+#endif

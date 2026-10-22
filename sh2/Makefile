@@ -10,7 +10,7 @@ CXXFLAGS := $(ARCH) -O2 -fpermissive -Wno-narrowing -w -fno-exceptions -fno-rtti
             -ffunction-sections -fdata-sections -x c++ -I$(Z) -I../pc/stub -DZ32X $(DEFS)
 GAME := $(filter-out main config audio spc_player opengl glsl_shader zelda_cpu_infra,$(basename $(notdir $(wildcard $(Z)/src/*.c))))
 SNES := ppu dma
-OBJS := $(addprefix obj/,$(addsuffix .o,$(GAME) $(SNES))) obj/z32_main.o obj/z32_sound.o obj/z32_stubs.o obj/z32_sys.o obj/z32_data.o
+OBJS := $(addprefix obj/,$(addsuffix .o,$(GAME) $(SNES))) obj/z32_main.o obj/z32_sound.o obj/z32_save.o obj/z32_stubs.o obj/z32_sys.o obj/z32_data.o
 vpath %.c $(Z)/src $(Z)/snes
 all: z32.bin
 z32.bin: z32.elf

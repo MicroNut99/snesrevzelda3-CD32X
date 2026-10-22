@@ -24,7 +24,8 @@ compares the SNES RAM - and every drawn picture - with the PC reference (`pc/zhx
 | Sound effects | every effect the game can send (ports 1-3: effects, the rain / wind ambiences) rendered at build time with zelda3's own SNES sound driver (`pc/zh_sound`), 8-bit at the PWM rate in the cartridge (2.1 MB); the slave SH-2 mixes 5 voices into the 32X PWM in its H interrupt, paced by the PWM's FIFO (`sh2/z32_sound.cpp`). Pitch checked in ares; the rate is one constant (`Z32_PWM_RATE`) if a console plays it off |
 | Music | CD audio from a Sega CD under the 32X (Mode 1): `build/Zelda3_32X_CD.cue`, track n = song n (34 tracks, 27 min, one pass each - the drive repeats the songs that loop), rendered with the same driver. The 68000 plays them (`cart/cd.s`, from Rev32XCD / Sonic32XPlus1); 0xF1-0xF3 fade / lower / restore with the BIOS fader. No Sega CD: no music |
 | Controls | Genesis pad: A = Y (item), B = B (sword), C = A (action), X = X (map), Y = L, Z = R, Start = Start, Mode = Select |
-| Not done | colour math with a fixed colour or subtraction runs a slower exact loop; mode 7 (the world map) at speed; SRAM saves (the ROM is over 2 MB: SRAM will need switching in); stereo effects (the SNES pans them - mono here) |
+| Saves | the game's three files in the cartridge's backup SRAM (8 KB, odd bytes at 0x200001; header `RA`). The ROM's upper half shares that address, so the 68000 switches the SRAM in (0xA130F1) only while it copies it to / from an 8 KB mirror in its RAM, with both SH2s parked in SDRAM (`sh2/z32_save.cpp`, `cart/cart_md.s`); a save sends only what changed. Tested in ares: a file made, the console switched off and on, the file is there |
+| Not done | colour math with a fixed colour or subtraction runs a slower exact loop; mode 7 (the world map) at speed; stereo effects (the SNES pans them - mono here) |
 
 ### Bugs found in zelda3 by the port
 Out-of-bounds table reads that the SNES resolves by reading on through the ROM; on the PC they

@@ -18,18 +18,18 @@
 |     53  sound pack   COMM12 = 0: no sound effects        (C2: Sega CD PCM)
 |     56/59 backup RAM COMM12 = 0: "NO BACKUP RAM"         (C2: Sega CD backup RAM)
 |     57  BRAM word    COMM8 = 0
-|     60  SRAM load    (v18) cartridge SRAM -> the 128-byte save block in 68000 RAM; COMM2 =
-|                      1 the block is valid (magic + checksum), 2 only v17m's high score was
-|                      found (COMM8:COMM10 = that score), 0 nothing saved yet
-|     61  SRAM save    (v18) the save block -> SRAM (the checksum is made here)
+|     60  SRAM load    Zelda 3 32X: the cartridge SRAM (8 KB, odd bytes 0x200001-0x203FFF) -> the
+|                      8 KB mirror in 68000 RAM; COMM2 = 1.  The SH2s must be off the ROM: the
+|                      cartridge is moved (RV) for ~35 ms (sh2/z32_save.cpp parks them)
+|     61  SRAM save    Zelda 3 32X: the mirror -> SRAM (same rule)
 |     62  music        (v18) COMM2 = 0 silence, 1 FM (the VGM stream, from the start),
 |                      Zelda 3 32X: 3 = CD track COMM8 once, 4 = CD volume COMM8 (0 .. 0x400);
 |                      2 CD audio track COMM8, repeating (needs a Sega CD + audio CD)
 |     63  CD status    (v18) COMM2 = 0 not tried, 1 no Sega CD, 2 Sega CD does not answer,
 |                      3 ready; COMM8 = last track number (0 = no audio CD)
 |     64  CD player    (v18) COMM2 = 'P' play from track COMM8 on, 'S' stop, 'Z' pause/go on
-|     65  block read   (v18) COMM8 = word COMM2 (0-63) of the save block
-|     66  block write  (v18) word COMM2 of the save block = COMM8
+|     65  mirror read  Zelda 3 32X: COMM8:COMM10 = long COMM2 (0-2047) of the SRAM mirror
+|     66  mirror write Zelda 3 32X: long COMM2 (0-2047) of the SRAM mirror = COMM8:COMM10
 | v18: FM MUSIC - the V-blank plays one frame of the music stream (tools/make_music.py, from
 |   a VGM) on the YM2612 / PSG; the Z80 is kept off the bus.  CD AUDIO - Chilly Willy's Mode 1
 |   code (from Vic's YATSSD, via the Sonic32XPlus1 cartridge): cart/cd.s.
@@ -54,7 +54,7 @@
         .equ    by,         0x00FF000A
         .equ    seed,       0x00FF000C          | star placement random number
         .equ    sram_ram,   0x00FF0100          | v17m: the SRAM routine runs from here (RAM, 512 bytes)
-        .equ    save_buf,   0x00FF0400          | v18: the 128-byte save block (64 words)
+        .equ    save_buf,   0x00FF2000          | Zelda 3 32X: the 8 KB SRAM mirror (0xFF2000-0xFF3FFF)
         .equ    mus_mode,   0x00FF0010          | v18: 0 silent, 1 FM
         .equ    mus_pal,    0x00FF0011          | v18: 1 = 50 Hz console (an extra music frame every 5th)
         .equ    mus_pal5,   0x00FF0012          | v18: PAL frame counter 0-4
@@ -234,29 +234,12 @@ c_zero12:
 c_zero8:
         move.w  #0,COMM8
         bra.w   done
-c_sram_rd:                                      | v18: SRAM -> save block, checked here
+c_sram_rd:                                      | SRAM -> the mirror
         moveq   #0,d4
-        jsr     sram_ram                        | d6/d5: v17m's old score, if any
-        bsr     blk_sum                         | d0 = checksum of words 0-62
-        lea     save_buf,a0
-        cmpi.w  #0x5533,(a0)                    | "U3"
-        bne.b   1f
-        cmp.w   126(a0),d0
-        bne.b   1f
+        jsr     sram_ram
         move.w  #1,COMM2
         bra.w   done
-1:      tst.w   d6                              | not valid: v17m's single high score?
-        beq.b   2f
-        move.l  d5,COMM8
-        move.w  #2,COMM2
-        bra.w   done
-2:      move.w  #0,COMM2
-        bra.w   done
-c_sram_wr:                                      | v18: save block -> SRAM
-        lea     save_buf,a0
-        move.w  #0x5533,(a0)
-        bsr     blk_sum
-        move.w  d0,126(a0)
+c_sram_wr:                                      | the mirror -> SRAM
         moveq   #1,d4
         jsr     sram_ram
 done:
@@ -330,29 +313,20 @@ c_cdplay:
         bne.w   done
         bsr     CD_PauseResume
         bra.w   done
-c_blk_rd:
+c_blk_rd:                                       | long COMM2 of the mirror -> COMM8:COMM10
         move.w  COMM2,d0
-        andi.w  #63,d0
-        add.w   d0,d0
+        andi.w  #2047,d0
+        lsl.w   #2,d0
         lea     save_buf,a0
-        move.w  0(a0,d0.w),COMM8
+        move.l  0(a0,d0.w),COMM8
         bra.w   done
-c_blk_wr:
+c_blk_wr:                                       | COMM8:COMM10 -> long COMM2 of the mirror
         move.w  COMM2,d0
-        andi.w  #63,d0
-        add.w   d0,d0
+        andi.w  #2047,d0
+        lsl.w   #2,d0
         lea     save_buf,a0
-        move.w  COMM8,0(a0,d0.w)
+        move.l  COMM8,0(a0,d0.w)
         bra.w   done
-blk_sum:                                        | d0 = 0x5A5A + words 0..62 of the save block
-        movem.l d1/a0,-(sp)
-        lea     save_buf,a0
-        move.w  #0x5A5A,d0
-        moveq   #62,d1
-1:      add.w   (a0)+,d0
-        dbra    d1,1b
-        movem.l (sp)+,d1/a0
-        rts
 
 | ---- v18: FM music ------------------------------------------------------------------------------
 fm_write0:                                      | d0 = register, d1 = value (port 0)
@@ -547,48 +521,24 @@ clear_plane:                                    | 64 x 32 cells of tile 0 (empty
 
 | ---- SRAM (header "RA", 8 KB on odd bytes at 0x200001) -----------------------------------------
 | Copied to RAM at start-up and run from there (it sets RV, which moves the cartridge).
-|   d4 = 0: load - the 128-byte save block (v18) from 0x200101.. into save_buf, and v17m's
-|           old high-score block from 0x200001: d6 = 1 if that one is valid, d5 = its score
-|   d4 = 1: save - save_buf -> 0x200101..
-| v17m's block, one byte per odd address: 'U' 'R' s3 s2 s1 s0 sum ~sum.
-| With RV = 1 the 68000 sees the cartridge at 0x000000-0x3FFFFF (SRAM at 0x200000); the SH2s
-| must not read the ROM meanwhile - the master waits on COMM0, and only asks between games.
+|   d4 = 0: load - SRAM -> the 8 KB mirror (save_buf);   d4 = 1: save - the mirror -> SRAM
+| With RV = 1 the 68000 sees the cartridge at 0x000000-0x3FFFFF, and 0xA130F1 = 1 puts the SRAM
+| at 0x200000 (a 4 MB cartridge: the ROM's upper half otherwise); the SH2s must not read the ROM
+| meanwhile - sh2/z32_save.cpp parks both in SDRAM first.
         .align  2
 sram_blob:
         move.w  sr,-(sp)
         move.w  #0x2700,sr                      | no interrupts while the cartridge is moved
         move.b  #1,0xA15107                     | RV on
         move.b  #1,0xA130F1                     | SRAM on, writable
-        lea     0x200101,a2                     | the v18 block
+        lea     0x200001,a2
         lea     save_buf,a3
-        move.w  #127,d3
+        move.w  #8191,d3
         tst.w   d4
         bne.b   5f
 1:      move.b  (a2),(a3)+                      | ---- load ----
         addq.l  #2,a2
         dbra    d3,1b
-        lea     0x200001,a2                     | v17m's old block
-        moveq   #0,d6
-        cmpi.b  #0x55,(a2)                      | 'U'
-        bne.b   9f
-        cmpi.b  #0x52,2(a2)                     | 'R'
-        bne.b   9f
-        lea     4(a2),a3
-        moveq   #0,d5
-        moveq   #0,d7
-        moveq   #3,d3
-2:      lsl.l   #8,d5
-        move.b  (a3),d2
-        move.b  d2,d5
-        add.b   d2,d7
-        addq.l  #2,a3
-        dbra    d3,2b
-        cmp.b   (a3),d7
-        bne.b   9f
-        not.b   d7
-        cmp.b   2(a3),d7
-        bne.b   9f
-        moveq   #1,d6
         bra.b   9f
 5:      move.b  (a3)+,(a2)                      | ---- save ----
         addq.l  #2,a2

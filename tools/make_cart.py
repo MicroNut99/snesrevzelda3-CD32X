@@ -5,7 +5,8 @@
 
 ROM layout:
   0x000000  standard 32X boot block (tools/mars_boot.bin), patched: titles (ROM_TITLE), ROM end,
-            the 32X header's SH2 values (from the program's 0x38-byte boot table), checksum
+            backup SRAM (8 KB at 0x200001, odd bytes), the 32X header's SH2 values (from the
+            program's 0x38-byte boot table), checksum
   0x000800  cart_md.bin - the 68000 program (linked at 0x880800)
   0x008000  the SH2 program (boot table removed); the 32X boot ROM copies its first part
             (code + data, the boot table's size) to SDRAM
@@ -32,9 +33,10 @@ rom[0:0x800] = boot
 def put_str(off, s, n): rom[off:off + n] = s.encode("ascii")[:n].ljust(n, b" ")
 put_str(0x120, TITLE, 48); put_str(0x150, TITLE, 48)
 rom[0x1A0:0x1A8] = struct.pack(">II", 0, SIZE - 1)
-# no backup SRAM declared (yet): the ROM is over 2 MB, and SRAM at 0x200000 would cover part of
-# it - saves will switch it in with 0xA130F1 when they are added
-rom[0x1B0:0x1BC] = b"            "
+# backup SRAM: 8 KB on the odd bytes of 0x200001-0x203FFF (Zelda's save file). A 4 MB ROM's
+# upper half is there too: the 68000 switches the SRAM in with 0xA130F1 only while it copies it
+# (cart/cart_md.s sram_blob), the way 3-4 MB Genesis games with saves do
+rom[0x1B0:0x1BC] = b"RA\xF8\x20" + struct.pack(">II", 0x200001, 0x203FFF)
 put_str(0x3C0, TITLE, 16)                                      # 32X header
 rom[0x3D0:0x3F0] = struct.pack(">8I", 0, SH2_OFF, 0, size, ment, sent, mvbr, svbr)
 rom[0x800:0x800 + len(md)] = md

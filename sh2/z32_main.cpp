@@ -40,6 +40,8 @@ extern const uint8_t z32_expect[], z32_expect_end[];      /* the PC's RAM hash p
 extern const uint8_t z32_expect_px[], z32_expect_px_end[];   /* the PC's picture hash per frame (BE) */
 void secondary(void);
 void slave_hint_c(void);
+void z32_slave_park(void);                /* z32_save.cpp: off the ROM while the 68000 moves it */
+extern uint32_t z32_park_req;
 int main(void);
 volatile uint32_t slave_go_flag;
 }
@@ -121,7 +123,9 @@ void secondary(void) {
   uint32 seen = 0;
   for (;;) {
     uint32 cmd;
-    while ((cmd = THRU(z32_slave_cmd)) == seen) { }
+    while ((cmd = THRU(z32_slave_cmd)) == seen) {
+      if (THRU(z32_park_req)) z32_slave_park();
+    }
     seen = cmd;
     CCR = 0x11;                                  /* purge: drop what the master changed since */
     uint16 t0 = frt();
@@ -357,6 +361,12 @@ int main(void) {
   ZeldaInitialize();
   g_zenv.ppu->extraLeftRight = 0;
   COMM12 = 2;
+#ifdef Z32_PLAY
+  ZeldaReadSram();                               /* the save file from the cartridge (z32_save.cpp) */
+#ifdef Z32_SAVE_TEST
+  { void z32_save_selftest(void); z32_save_selftest(); }
+#endif
+#endif
 #ifndef Z32_PLAY                                 /* Z32_PLAY: no replay, the pad from power-on */
   if (!ZeldaStartReplayFromMemory(z32_replay, (size_t)(z32_replay_end - z32_replay))) Die("replay");
 #endif
