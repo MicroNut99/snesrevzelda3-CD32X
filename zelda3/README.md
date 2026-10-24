@@ -23,6 +23,30 @@ A bunch of features have been added that are not supported by the original game.
 
 ## Building
 
+**In this repository (the Sega 32X port) these sources are changed for the 32X and compile only as
+C++ with the port's build: the PC build below is upstream's and does not work here.** What still
+applies is making the assets from your ROM (step 5 below, or `python3 assets/restool.py
+--extract-from-rom` on Linux). To build the game, see [Building](../README.md#building) in the
+port's README; in short:
+
+```
+cd zelda3 && cp /path/to/zelda3.sfc . && python3 -m pip install -r requirements.txt
+python3 assets/restool.py --extract-from-rom   # -> zelda3_assets.dat
+cd .. && mkdir -p build && cp zelda3/zelda3_assets.dat build/
+./build.sh [play|replay|test]                  # -> Zelda3_32X.32x (GENDEV = the Sega toolchains)
+```
+
+`assets/restool.py` switches: `-r ROM` / `--rom ROM` (the ROM file; default `zelda3.sfc` or `zelda3.smc`),
+`-e` / `--extract-from-rom` (extract everything from the ROM), `--extract-dialogue` (the text of a
+translated ROM), `--languages L1,L2` (more languages in the .dat: de, fr, fr-c, en, es, pl, pt,
+redux, nl, sv - the 32X build always uses the first, English, and the cartridge must stay within
+4 MB), `--no-build`, `--print-strings`, `--print-assets-header` (debug), `--sprites-from-png`
+(sprites from PNG files instead of the ROM). The build switches of the 32X port (`build.sh`, the
+SH-2 `DEFS`, the PC test tools) are listed in the port's README. `zelda3.ini` is read by the PC
+build only.
+
+Upstream's instructions (the PC version, for reference):
+
 You must self-build for now. Steps for 64-bit Windows:<br>
 (0) Download [Python](https://www.python.org/ftp/python/3.11.4/python-3.11.4-amd64.exe) and install with "Add to PATH" checked<br>
 (1) Click the green button "Code > Download ZIP" on the github page and extract the ZIP<br>

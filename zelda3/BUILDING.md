@@ -1,3 +1,10 @@
+**Note (the Sega 32X port):** in this repository zelda3's sources are changed for the 32X and
+compile only as C++ with the port's build. The PC build instructions below are upstream's and do not
+work here - only making the assets (`python3 assets/restool.py --extract-from-rom`) still applies.
+To build the game see [Building](../README.md#building) in the port's README (the steps, `build.sh
+play|replay|test`, every switch). `assets/restool.py`'s switches are listed in
+[README.md](README.md#building).
+
 ## Installing libraries on Linux/MacOS
 1. Open a terminal
 2. Install pip if not already installed

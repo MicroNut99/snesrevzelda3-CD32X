@@ -34,3 +34,5 @@ build
 build_log.txt
 pc/zhx_md
 pc/obj_md/
+vram.bin
+ram.bin
