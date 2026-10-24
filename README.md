@@ -8,6 +8,20 @@ a Sega CD (CD audio, Sonic32XPlus1's CD code) when one is attached.
 music are extracted at build time from your own US ROM (`zelda3.sfc`, SHA256
 `66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb`).
 
+## Build in one command
+
+With the Sega toolchains in `/opt/toolchains/sega` (or `export GENDEV=/path/to/them`) and the tools
+installed once (Ubuntu / WSL: `sudo apt install g++ make python3-pil python3-yaml python3-numpy`),
+from this folder, with your ROM's path in place of `/path/to/zelda3.sfc`:
+
+```
+cp /path/to/zelda3.sfc zelda3/ && (cd zelda3 && python3 assets/restool.py --extract-from-rom) && mkdir -p build && cp zelda3/zelda3_assets.dat build/ && ./build.sh 2>&1 | tee build_log.txt
+```
+
+It writes `Zelda3_32X.32x` and the music CD, `build/Zelda3_32X_CD.cue`. The first build takes a few
+minutes (it renders the sound); after that, `./build.sh` alone rebuilds. Everything else - the other
+builds and every switch - is under [Building](#building).
+
 ## Status: plays in ares - game at full speed in most places, picture ~28 fps where the Genesis planes are used, 10-15 fps elsewhere
 
 The SH-2 runs zelda3's game code at the SNES's 60 Hz and draws as often as it can (frame skip).
